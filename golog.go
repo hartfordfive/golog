@@ -209,12 +209,14 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 
 func main() {
 
-	var logBaseDir string
+	var logBaseDir,ipAndPort string
 	var buffLines int
 
 	flag.StringVar(&logBaseDir, "d", "/var/log/golog/", "Base directory where log files will be written to")
-	//flag.StringVar(&ipAndPort, "p", ":80", "Port number to listen on")
+	flag.StringVar(&ipAndPort, "p", ":80", "Port number to listen on")
 	flag.IntVar(&buffLines, "b", 25, "Number of lines to buffer before dumping to log file")
+	flag.Parse()
+
 	state.MaxBuffLines = buffLines
 
 
@@ -252,7 +254,7 @@ func main() {
 	defer state.CurrLogFileHandle.Close()
 
 	http.HandleFunc("/", logHandler)
-	err := http.ListenAndServe(":8086", nil)
+	err := http.ListenAndServe(ipAndPort, nil)
 	if err != nil {
 	   fmt.Println("GoLog Error:", err)
 	   os.Exit(0)
