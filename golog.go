@@ -7,6 +7,7 @@ import (
 	//"encoding/base64"
 	"./lib"
 	"github.com/abh/geoip"
+	"github.com/fzzy/radix/redis"
 	"image"
 	"image/png"
 	"net/url"
@@ -31,6 +32,7 @@ var (
 	loadOnce sync.Once
 	pngPixel image.Image
 	geo      *geoip.GeoIP
+	redisClient *redis.Client
 )
 
 type LoggerState struct {
@@ -58,16 +60,16 @@ func loadPNG() {
 	pngPixel = m
 }
 
-func getInfo(ip string) (string, string, string) {
+func getInfo(ip string) (string, string, string, string, string) {
 
 	matches := regexp.MustCompile(`([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)`).FindStringSubmatch(ip)
 	if len(matches) >= 1 && geo != nil {
 		record := geo.GetRecord(ip)
 		if record != nil {
-			return record.CountryName, record.Region, record.City
+			return record.ContinentCode, record.CountryCode, record.CountryName, record.Region, record.City
 		}
 	}
-	return "", "", ""
+	return "", "", "", "", ""
 }
 
 func loadGeoIpDb(dbName string) *geoip.GeoIP {
@@ -140,40 +142,103 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 
 	// Extract the IP and get its related info
 	matches := regexp.MustCompile(`([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)`).FindStringSubmatch(req.RemoteAddr)
-	country := ""
+	continent := ""
+	countryCode := ""
+	//country := ""
 	region := ""
 	city := ""
 	ip := ""
+	cid := ""
 	category := ""
 	action := ""
 	label := ""
 	value := ""
 
+	
 	if len(matches) >= 1 {
-		country, region, city = getInfo(matches[1])
+
+	   	// continent, countryCode, country, region, city
+		continent, countryCode, _, region, city = getInfo(matches[1])
 		ip = matches[1]
+		currHour := strconv.Itoa(time.Now().Hour())
+
+		t := time.Now()
+		y,m,d := t.Date()
+		expiryTime := time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
+
+		if redisClient != nil {
+		
+		   // Increment the necessary "Country" related counters in the hashed set
+		   redisRes,err := redisClient.Cmd("hexists", "country_hits_"+countryCode, currHour).Bool()
+
+		   // If country exists in hashed set, then increment the value
+		   redisErrHandler(err)
+		   if redisRes == true {
+		      _, err = redisClient.Cmd("hincrby", "country_hits_"+countryCode, currHour, 1).Int()
+		      redisErrHandler(err)
+		   } else {
+		     _, err = redisClient.Cmd("hset", "country_hits_"+countryCode, currHour, 1).Int()
+		     redisErrHandler(err)
+		     // Set the expiry for this key to 00:00:00 tomorrow so that new data can take its place
+		     if err == nil {
+		     	 resExpire, err := redisClient.Cmd("expireat", "continent_hits_"+continent, expiryTime.Unix()).Int()		     	
+			 if resExpire == 1 && err == nil {
+			    fmt.Println("\tRedis expire successful")
+			 }
+		     }
+		   }
+
+
+		   // Now increment the necessary "Continent" related counters in the hashed set
+                   redisRes,err = redisClient.Cmd("hexists", "continent_hits_"+continent, currHour).Bool()
+
+                   // If continent exists in hashed set, then increment the value
+                   redisErrHandler(err)
+                   if redisRes == true {
+                      _, err = redisClient.Cmd("hincrby", "continent_hits_"+continent, currHour, 1).Int()
+                      redisErrHandler(err)
+                   } else {
+                     _, err = redisClient.Cmd("hset", "continent_hits_"+continent, currHour, 1).Int()
+                     redisErrHandler(err)
+		     // Set the expiry for this key to 00:00:00 tomorrow so that new data can take its place
+                     if err == nil {
+		     	resExpire, err := redisClient.Cmd("expireat", "continent_hits_"+continent, expiryTime.Unix()).Int()
+			if resExpire == 1 && err == nil {
+                            fmt.Println("\tRedis expire successful")
+                        }
+
+                     }
+
+                   }
+
+		}
+
 	}
 
-	ln += "[" + strconv.Itoa(ts) + "] ~ " + ip + " ~ " + country + " ~ " + region + " ~ " + city + " ~ "
-
-	_, ok := params["category"]
+	ln += "[" + strconv.Itoa(ts) + "] ~ " + ip + " ~ " + countryCode + " ~ " + region + " ~ " + city + " ~ "
+	
+	 _, ok := params["cid"]
+        if ok {
+                cid = strings.Replace(params.Get("cid"), "~", "-", -1)
+        }
+	_, ok = params["category"]
 	if ok {
-		category = params.Get("category")
+		category = strings.Replace(params.Get("category"), "~", "-", -1)
 	}
 	_, ok = params["action"]
 	if ok {
-		action = params.Get("action")
+		action = strings.Replace(params.Get("action"), "~", "-", -1)
 	}
 	_, ok = params["label"]
 	if ok {
-		label = params.Get("label")
+		label = strings.Replace(params.Get("label"), "~", "-", -1)
 	}
 	_, ok = params["value"]
 	if ok {
-		value = params.Get("value")
+		value = strings.Replace(params.Get("value"), "~", "-", -1)
 	}
 
-	ln += category + " ~ " + action + " ~ " + label + " ~ " + value + " ~ " + req.Header.Get("User-Agent") + "\n"
+	ln += cid + " ~" + category + " ~ " + action + " ~ " + label + " ~ " + value + " ~ " + req.Header.Get("User-Agent") + "\n"
 
 	state.BuffLines = append(state.BuffLines, ln)
 	state.BuffLineCount++
@@ -207,18 +272,27 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 
 }
 
+
+func redisErrHandler(err error) {
+     if err != nil { 
+     	fmt.Println("Redis error:", err)
+     }
+}
+
 func main() {
 
-	var logBaseDir,ipAndPort string
-	var buffLines int
+	var logBaseDir,ip string
+	var buffLines, port, redisDb int
 
 	flag.StringVar(&logBaseDir, "d", "/var/log/golog/", "Base directory where log files will be written to")
-	flag.StringVar(&ipAndPort, "p", ":80", "Port number to listen on")
+	flag.StringVar(&ip, "i", "", "IP to listen on")
+	flag.IntVar(&port, "p",80, "Port number to listen on")
 	flag.IntVar(&buffLines, "b", 25, "Number of lines to buffer before dumping to log file")
+	flag.IntVar(&redisDb, "db", 2, "Index of redis DB to use")
+
 	flag.Parse()
 
 	state.MaxBuffLines = buffLines
-
 
 	// Load the transparent PNG pixel into memory once
 	loadOnce.Do(loadPNG)
@@ -253,8 +327,19 @@ func main() {
 
 	defer state.CurrLogFileHandle.Close()
 
+
+	// Finally, load the redis instance
+	c, redisErr := redis.DialTimeout("tcp", "127.0.0.1:6379", time.Duration(2)*time.Second)
+	redisErrHandler(redisErr)
+	redisClient = c
+	defer redisClient.Close()
+
+	// select database
+	r := redisClient.Cmd("select", redisDb)
+	redisErrHandler(r.Err)
+
 	http.HandleFunc("/", logHandler)
-	err := http.ListenAndServe(ipAndPort, nil)
+	err := http.ListenAndServe(ip+":"+strconv.Itoa(port), nil)
 	if err != nil {
 	   fmt.Println("GoLog Error:", err)
 	   os.Exit(0)
