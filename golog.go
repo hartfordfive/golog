@@ -47,6 +47,15 @@ type LoggerState struct {
 
 var state = LoggerState{}
 
+
+func joinList(list1 []string, list2 []string) []string{
+     newslice := make([]string, len(list1) + len(list2))
+     copy(newslice, list1)
+     copy(newslice[len(list1):], list2)
+     return newslice
+}
+
+
 func loadPNG() {
 	f, err := os.Open(pixel)
 	if err != nil {
@@ -60,16 +69,16 @@ func loadPNG() {
 	pngPixel = m
 }
 
-func getInfo(ip string) (string, string, string, string, string) {
+func getInfo(ip string) (string, string, string, string) {
 
 	matches := regexp.MustCompile(`([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)`).FindStringSubmatch(ip)
 	if len(matches) >= 1 && geo != nil {
 		record := geo.GetRecord(ip)
 		if record != nil {
-			return record.ContinentCode, record.CountryCode, record.CountryName, geo.GetRegionName(record.CountryCode, record.Region), record.City
+			return record.ContinentCode, record.CountryCode, record.CountryName, record.City
 		}
 	}
-	return "", "", "", "", ""
+	return "", "", "", ""
 }
 
 func loadGeoIpDb(dbName string) *geoip.GeoIP {
@@ -145,7 +154,6 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 	continent := ""
 	countryCode := ""
 	//country := ""
-	region := ""
 	city := ""
 	ip := ""
 	cid := ""
@@ -157,8 +165,7 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 	
 	if len(matches) >= 1 {
 
-	   	// continent, countryCode, country, region, city
-		continent, countryCode, _, region, city = getInfo(matches[1])
+		continent, countryCode, _, city = getInfo(matches[1])
 		ip = matches[1]
 		currHour := strconv.Itoa(time.Now().Hour())
 
@@ -172,21 +179,20 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 		   // all stats and set this object once again to expiry tomorrow at 00h:00m:00s
 		   statsOkUntil, err := redisClient.Cmd("ttl", "golog_stats_available").Int()
                    if err == nil {
+		   
 		      if statsOkUntil < 1 {
 		      	 
 			 // First get the keys from hashed set
-		      	 resKeys, err := redisClient.Cmd("keys", "continent_hits_*", "country_hits_*").List()
-			 
-			 // Now delete all keys in hashed set
-			 _, err = redisClient.Cmd("hdel", resKeys, expiryTime.Unix()).Bool()
-			 
-			 // Finally, set the "golog_stats_available" key again with the proper expiry time
-			 _, err = redisClient.Cmd("set", "golog_stats_available", 1).Str()
-			 redisErrHandler(err, "[set golog_stats_available]")
-		         if err == nil {
-	   	            _, err = redisClient.Cmd("expireat", "golog_stats_available", expiryTime.Unix()).Int()
-	      	         }
+		      	 tmpResKeys1, _ := redisClient.Cmd("keys", "continent_hits_*").List()
+			 tmpResKeys2, _ := redisClient.Cmd("keys", "country_hits_*").List()			 
+			 resKeys := joinList(tmpResKeys1,tmpResKeys2)			 
 
+			 // Now delete all keys in hashed set and			
+			 // set the "golog_stats_available" key again with the proper expiry time
+			 redisClient.Append("hdel", resKeys, expiryTime.Unix())
+			 redisClient.Append("set", "golog_stats_available", 1)
+			 redisClient.Append("expireat", "golog_stats_available", expiryTime.Unix())			 
+			 redisClient.GetReply()		
 		       }
                    }
 
@@ -222,7 +228,7 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 
 	}
 
-	ln += "[" + strconv.Itoa(ts) + "] ~ " + ip + " ~ " + countryCode + " ~ " + region + " ~ " + city + " ~ "
+	ln += "[" + strconv.Itoa(ts) + "] ~ " + ip + " ~ " + countryCode + " ~ " + city + " ~ "
 	
 	 _, ok := params["cid"]
         if ok {
