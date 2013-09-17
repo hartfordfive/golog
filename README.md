@@ -17,7 +17,18 @@ Usage:
 
 or with compiled binary:
 
-`golog -i [IP] -p [PORT] -b [BUFF_LINES] -db [REDIS_DB_INDEX] -d [LOGFILES_DIRECTORY]`
+`./golog -i [IP] -p [PORT] -b [BUFF_LINES] -db [REDIS_DB_INDEX] -d [LOGFILES_DIRECTORY]`
+
+
+Parameter details:
+--------------------
+
+`-i` : The IP to start the logging server on (default = 0.0.0.0)
+`-p` : The port on which to listen (default = 80)
+`-b` : The number of lines to store in the buffer before writing to disk (default = 25)
+`-db` : The index number of the redis DB to use (default = 2)
+`-d` : The directory in which the logfiles are to be stored (default = /var/log/golog/)
+
 
 
 HTTP URL Format:
