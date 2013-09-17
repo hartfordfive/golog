@@ -66,7 +66,7 @@ func getInfo(ip string) (string, string, string, string, string) {
 	if len(matches) >= 1 && geo != nil {
 		record := geo.GetRecord(ip)
 		if record != nil {
-			return record.ContinentCode, record.CountryCode, record.CountryName, record.Region, record.City
+			return record.ContinentCode, record.CountryCode, record.CountryName, geo.GetRegionName(record.CountryCode, record.Region), record.City
 		}
 	}
 	return "", "", "", "", ""
@@ -167,48 +167,55 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 		expiryTime := time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
 
 		if redisClient != nil {
-		
+				
+		   // First check if the redis pool for the "golog_stats_available" object. If not present, then reset
+		   // all stats and set this object once again to expiry tomorrow at 00h:00m:00s
+		   statsOkUntil, err := redisClient.Cmd("ttl", "golog_stats_available").Int()
+                   if err == nil {
+		      if statsOkUntil < 1 {
+		      	 
+			 // First get the keys from hashed set
+		      	 resKeys, err := redisClient.Cmd("keys", "continent_hits_*", "country_hits_*").List()
+			 
+			 // Now delete all keys in hashed set
+			 _, err = redisClient.Cmd("hdel", resKeys, expiryTime.Unix()).Bool()
+			 
+			 // Finally, set the "golog_stats_available" key again with the proper expiry time
+			 _, err = redisClient.Cmd("set", "golog_stats_available", 1).Str()
+			 redisErrHandler(err, "[set golog_stats_available]")
+		         if err == nil {
+	   	            _, err = redisClient.Cmd("expireat", "golog_stats_available", expiryTime.Unix()).Int()
+	      	         }
+
+		       }
+                   }
+
+		   
 		   // Increment the necessary "Country" related counters in the hashed set
 		   redisRes,err := redisClient.Cmd("hexists", "country_hits_"+countryCode, currHour).Bool()
 
 		   // If country exists in hashed set, then increment the value
-		   redisErrHandler(err)
+		   redisErrHandler(err, "[hexists country_hits_*]")
 		   if redisRes == true {
 		      _, err = redisClient.Cmd("hincrby", "country_hits_"+countryCode, currHour, 1).Int()
-		      redisErrHandler(err)
+		      redisErrHandler(err, "[hincrby country_hits_*]")
 		   } else {
 		     _, err = redisClient.Cmd("hset", "country_hits_"+countryCode, currHour, 1).Int()
-		     redisErrHandler(err)
-		     // Set the expiry for this key to 00:00:00 tomorrow so that new data can take its place
-		     if err == nil {
-		     	 resExpire, err := redisClient.Cmd("expireat", "continent_hits_"+continent, expiryTime.Unix()).Int()		     	
-			 if resExpire == 1 && err == nil {
-			    fmt.Println("\tRedis expire successful")
-			 }
-		     }
+		     redisErrHandler(err, "[hset country_hits_*]")
 		   }
 
-
+		   
 		   // Now increment the necessary "Continent" related counters in the hashed set
                    redisRes,err = redisClient.Cmd("hexists", "continent_hits_"+continent, currHour).Bool()
 
                    // If continent exists in hashed set, then increment the value
-                   redisErrHandler(err)
+                   redisErrHandler(err, "[hexists content_hits+*]")
                    if redisRes == true {
                       _, err = redisClient.Cmd("hincrby", "continent_hits_"+continent, currHour, 1).Int()
-                      redisErrHandler(err)
+                      redisErrHandler(err, "[hincrby continent_hits_*]")
                    } else {
                      _, err = redisClient.Cmd("hset", "continent_hits_"+continent, currHour, 1).Int()
-                     redisErrHandler(err)
-		     // Set the expiry for this key to 00:00:00 tomorrow so that new data can take its place
-                     if err == nil {
-		     	resExpire, err := redisClient.Cmd("expireat", "continent_hits_"+continent, expiryTime.Unix()).Int()
-			if resExpire == 1 && err == nil {
-                            fmt.Println("\tRedis expire successful")
-                        }
-
-                     }
-
+                     redisErrHandler(err, "[hset continent_hits_*]")
                    }
 
 		}
@@ -238,7 +245,7 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 		value = strings.Replace(params.Get("value"), "~", "-", -1)
 	}
 
-	ln += cid + " ~" + category + " ~ " + action + " ~ " + label + " ~ " + value + " ~ " + req.Header.Get("User-Agent") + "\n"
+	ln += cid + " ~ " + category + " ~ " + action + " ~ " + label + " ~ " + value + " ~ " + req.Header.Get("User-Agent") + "\n"
 
 	state.BuffLines = append(state.BuffLines, ln)
 	state.BuffLineCount++
@@ -273,9 +280,9 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 }
 
 
-func redisErrHandler(err error) {
+func redisErrHandler(err error, stamp string) {
      if err != nil { 
-     	fmt.Println("Redis error:", err)
+     	fmt.Println(stamp + " Redis error:", err)
      }
 }
 
@@ -330,13 +337,26 @@ func main() {
 
 	// Finally, load the redis instance
 	c, redisErr := redis.DialTimeout("tcp", "127.0.0.1:6379", time.Duration(2)*time.Second)
-	redisErrHandler(redisErr)
+	redisErrHandler(redisErr, "[1 - tcp connect]")
 	redisClient = c
+
+	// Now set a simple object with a TTL of tomorrow at 00:00:00 so that any stats will get reset
+	_, redisErr = redisClient.Cmd("set", "golog_stats_available", 1).Str()
+	redisErrHandler(redisErr, "[2 - set golog_stats_available]")
+
+	if redisErr == nil {
+	   t := time.Now()
+           y,m,d := t.Date()
+           expiryTime := time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
+	   _, redisErr = redisClient.Cmd("expireat", "golog_stats_available", int(expiryTime.Unix())).Int()
+	   redisErrHandler(redisErr, "[3 - expireat golog_stats_available]")
+	}
+
 	defer redisClient.Close()
 
 	// select database
 	r := redisClient.Cmd("select", redisDb)
-	redisErrHandler(r.Err)
+	redisErrHandler(r.Err, "[4 - select]")
 
 	http.HandleFunc("/", logHandler)
 	err := http.ListenAndServe(ip+":"+strconv.Itoa(port), nil)
