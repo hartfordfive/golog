@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"encoding/json"
 )
 
 // Struct that contains the runtime properties including the buffered bytes to be written
@@ -43,9 +44,11 @@ type LoggerState struct {
 	CurrLogFileName   string
 	LogBaseDir        string
 	CookieDomain	  string
+	Config		  map[string]string
 }
 
-var state = LoggerState{}
+
+var state = LoggerState{Config: make(map[string]string)}
 
 
 func joinList(list1 []string, list2 []string) []string{
@@ -91,49 +94,10 @@ func loadGeoIpDb(dbName string) *geoip.GeoIP {
 	return geo
 }
 
-func getUDID() string{
-     f, _ := os.Open("/dev/urandom")
-     b := make([]byte, 16)
-     f.Read(b)
-     f.Close()
-     uuid := fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
-     return uuid
-}
-
-func getMonthAsIntString(m string) string {
-
-	switch m {
-	case "January":
-		return "01"
-	case "Februrary":
-		return "02"
-	case "March":
-		return "03"
-	case "April":
-		return "04"
-	case "May":
-		return "05"
-	case "June":
-		return "06"
-	case "July":
-		return "07"
-	case "August":
-		return "08"
-	case "September":
-		return "09"
-	case "October":
-		return "10"
-	case "November":
-		return "11"
-	case "December":
-		return "12"
-	}
-	return "01"
-}
 
 func getLogfileName() string {
 	y, m, d := time.Now().Date()
-	return strconv.Itoa(y) + "-" + getMonthAsIntString(m.String()) + "-" + strconv.Itoa(d) + "-" + strconv.Itoa(time.Now().Hour()) + "00.txt"
+	return strconv.Itoa(y) + "-" + tools.GetMonthAsIntString(m.String()) + "-" + strconv.Itoa(d) + "-" + strconv.Itoa(time.Now().Hour()) + "00.txt"
 }
 
 func logHandler(res http.ResponseWriter, req *http.Request) {
@@ -265,7 +229,6 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
         cookie := req.Header.Get("Cookie")
         if cookie != "" {
                   cookies := strings.Split(cookie, "; ")
-                  fmt.Println(cookies)
                   for i := 0; i < len(cookies); i++ {
                       parts := strings.Split(cookies[i], "=")
                       if parts[0] == "udid" {
@@ -277,7 +240,7 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
                   if udid == "" {
                       y,m,d := time.Now().Date()
                       expiryTime := time.Date(y, m, d+365, 0, 0, 0, 0, time.UTC)
-                      res.Header().Set("Set-Cookie", "udid="+getUDID()+"; Domain="+state.CookieDomain+"; Path=/; Expires="+expiryTime.Format(time.RFC1123))
+                      res.Header().Set("Set-Cookie", "udid="+tools.GetUDID()+"; Domain="+state.CookieDomain+"; Path=/; Expires="+expiryTime.Format(time.RFC1123))
                   }
         }
 
@@ -287,7 +250,8 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 	state.BuffLineCount++
 
 	// If there are 25 lines to be written, flush the buffer to the logfile
-	if state.BuffLineCount >= state.MaxBuffLines {
+	
+	if bl,_ := strconv.Atoi(state.Config["buffLines"]); state.BuffLineCount >= bl {
 
 		if getLogfileName() != state.CurrLogFileName {
 			fh, _ := os.Create(strings.TrimRight(state.LogBaseDir, "/") + "/" + getLogfileName())
@@ -316,27 +280,189 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 }
 
 
+func statsHandler(res http.ResponseWriter, req *http.Request) {
+     
+
+      // Get the list of all keys to fetch
+      resList1,_ := redisClient.Cmd("keys", "country_hits_*").List()
+      resList2,_ := redisClient.Cmd("keys", "continent_hits_*").List()
+      resList := tools.JoinLists(resList1,resList2)
+
+      // Now initialize a map with the key being the each individual redis key
+      resMap := make(map[string]map[string]string)
+      for i := 0; i < len(resList); i++ {
+      	  resMap[resList[i]] = make(map[string]string)
+      }
+
+      // Now pipline all the commands
+      for i := 0; i < len(resList); i ++ {
+	  redisClient.Append("hgetall", resList[i])
+      }
+
+      // Finally read all the results in the same order they were submited to redis
+      for k,_ := range resMap {
+           r := redisClient.GetReply()
+	   s,_ := r.Hash()
+	   resMap[k] = s
+      }
+
+     // Encode the list into JSON
+     data,err := json.Marshal(resMap)
+         
+     res.Header().Set("Cache-control", "public, max-age=0")
+     res.Header().Set("Content-Type", "application/json")     
+     if err == nil {
+          fmt.Fprintf(res, string(data))
+     } else {
+       fmt.Fprintf(res, "{\"status\": \"error\"}")
+     }
+     return
+
+
+}
+
+
+
 func redisErrHandler(err error, stamp string) {
      if err != nil { 
      	fmt.Println(stamp + " Redis error:", err)
      }
 }
 
+
+func loadConfig(filePath string) map[string]string{
+     
+     fmt.Println("Running "+filePath+" through tools.ParseConfigFile....")
+     params := tools.ParseConfigFile(filePath)
+
+     /*
+	 Now verify that all necessary parameters are present, otherwise return
+	 an error and exit
+     */
+
+     _,ok := params["log_base_dir"] 
+     if ok != true {
+     	fmt.Println("Config Error: log directory not specified!\n")
+        os.Exit(0)
+     } else {
+       state.Config["logBaseDir"] = params["log_base_dir"]       
+     }     	 
+
+     _,ok = params["server_ip"]
+     if ok != true {
+        fmt.Println("Config Error: server IP not specified!\n")
+        os.Exit(0)
+     } else {
+       state.Config["ip"] = params["server_ip"]
+     }
+
+     _,ok = params["server_port"]
+     if ok != true {
+        fmt.Println("Config Error: server port not specified!\n")
+        os.Exit(0)
+     } else {
+       state.Config["port"] = params["server_port"]
+     }
+
+     _,ok = params["num_buff_lines"]
+     if ok != true {
+        state.MaxBuffLines = 25
+	state.Config["buffLines"] = "25"
+     } else {
+       bl,_ := strconv.Atoi(params["num_buff_lines"])
+       state.MaxBuffLines = bl
+       state.Config["buffLines"] = params["num_buff_lines"]
+     }
+     _,ok = params["redis_db_index"]
+     if ok != true {
+        state.Config["redisDb"] = "2"
+     } else {
+       state.Config["redisDb"] = params["redis_db_index"]
+     }
+
+     _,ok = params["cookie_domain"]
+     if ok != true {
+        state.Config["cDomain"] = ""
+     } else {
+       state.Config["cDomain"] = params["cookie_domain"]
+     }
+
+     _,ok = params["reporting_server_active"]
+     if ok != true {
+        state.Config["reportingActive"] = "0"
+     } else {
+       state.Config["reportingActive"] = params["reporting_server_active"]
+     }
+
+     if state.Config["reportingActive"] == "1" {
+     	_,ok = params["reporting_server_ip"]
+	if ok != true {
+           state.Config["reportingIp"] = ""
+     	} else {
+       	  state.Config["reportingIp"] = params["reporting_server_ip"]
+     	}
+     	_,ok = params["reporting_server_port"]
+     	if ok != true {
+           state.Config["reportingPort"] = ""
+     	} else {
+       	  state.Config["reportingPort"] = params["reporting_server_port"]
+     	}
+     }
+
+     return params
+}
+
+
 func main() {
 
-	var logBaseDir,ip,cDomain string
-	var buffLines, port, redisDb int
-
+	var logBaseDir, ip, cDomain, config, reportingIp string
+	var buffLines, port, redisDb, reportingActive, reportingPort int
+	
 	flag.StringVar(&logBaseDir, "d", "/var/log/golog/", "Base directory where log files will be written to")
 	flag.StringVar(&ip, "i", "", "IP to listen on")
-	flag.IntVar(&port, "p",80, "Port number to listen on")
+	flag.IntVar(&port, "p", 80, "Port number to listen on")
 	flag.IntVar(&buffLines, "b", 25, "Number of lines to buffer before dumping to log file")
 	flag.IntVar(&redisDb, "db", 2, "Index of redis DB to use")
 	flag.StringVar(&cDomain, "domain", "", "Domain on which to set the udid cookie on.")
+
+	flag.IntVar(&reportingActive, "stats", 0, "Enable status reporting on [IP]:[PORT]")
+	flag.StringVar(&reportingIp, "ri", "", "IP to listen on for status reporting")
+        flag.IntVar(&reportingPort, "rp", 80, "Port number to listen on for status reporting")
+	
+	flag.StringVar(&config, "conf", "", "Config file to be used")
 	flag.Parse()
 
-	state.MaxBuffLines = buffLines
-	state.CookieDomain = cDomain
+
+	/*
+		If a config file is specified and exists, then parse it and use it,
+		otherwise just use the command-line flag values
+	*/
+
+
+	if config != "" {
+	    fmt.Println("Loading config file....")
+	    state.Config = loadConfig(config)			
+	} else {
+
+	  state.MaxBuffLines = buffLines
+	  state.CookieDomain = cDomain
+	  state.LogBaseDir = logBaseDir	  
+
+	  state.Config["logBaseDir"] = logBaseDir
+	  state.Config["ip"] = ip
+	  state.Config["port"] = strconv.Itoa(port)
+	  state.Config["buffLines"] = strconv.Itoa(buffLines)
+	  state.Config["redisDb"] = strconv.Itoa(redisDb)
+	  state.Config["cDomain"] = cDomain
+	  state.Config["reportingActive"] = strconv.Itoa(reportingActive)
+	  if reportingActive == 1 {
+	     state.Config["reportingIp"] = reportingIp
+	     state.Config["reportingPort"] = strconv.Itoa(reportingPort)
+	  } else {
+	    state.Config["reportingActive"] = "0"
+	  }
+ 
+	}
 
 	// Load the transparent PNG pixel into memory once
 	loadOnce.Do(loadPNG)
@@ -367,7 +493,6 @@ func main() {
 	fh, _ := os.Create(strings.TrimRight(logBaseDir, "/") + "/" + getLogfileName())
 	state.CurrLogFileName = getLogfileName()
 	state.CurrLogFileHandle = fh
-	state.LogBaseDir = logBaseDir
 
 	defer state.CurrLogFileHandle.Close()
 
@@ -396,10 +521,28 @@ func main() {
 	redisErrHandler(r.Err, "[4 - select]")
 
 	http.HandleFunc("/", logHandler)
-	err := http.ListenAndServe(ip+":"+strconv.Itoa(port), nil)
-	if err != nil {
-	   fmt.Println("GoLog Error:", err)
-	   os.Exit(0)
+	fmt.Println("Logging server started on "+state.Config["ip"]+":"+state.Config["port"])
+
+	// Finally start the reporting server if it's been enabled
+	if state.Config["reportingActive"] == "1" {
+	   // Start the second process in a seperate go thread so that it can respond and listen only to relevant requests
+	   go func() {
+	   	   http.HandleFunc("/stats", statsHandler)
+           	   err := http.ListenAndServe(state.Config["reportingIp"]+":"+state.Config["reportingPort"], nil)
+		   if err != nil {
+              	      fmt.Println("GoLog Error:", err)
+             	      os.Exit(0)
+           	   }
+	   }()
+	   fmt.Println("Reporting server started on "+state.Config["reportingIp"]+":"+state.Config["reportingPort"])
 	}
+
+
+	err := http.ListenAndServe(state.Config["ip"]+":"+state.Config["port"], nil)
+        if err != nil {
+           fmt.Println("GoLog Error:", err)
+           os.Exit(0)
+        }
+
 
 }
