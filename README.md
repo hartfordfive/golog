@@ -30,6 +30,7 @@ Parameter details:
 `-b` : The number of lines to store in the buffer before writing to disk (default = 25)<br/>
 `-db` : The index number of the redis DB to use (default = 2)<br/>
 `-d` : The directory in which the logfiles are to be stored (default = /var/log/golog/)<br/>
+`-domain` : The domain for which to set the UDID cookie on<br/>
 
 
 
