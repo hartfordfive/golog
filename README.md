@@ -4,7 +4,7 @@ golog
 A simple self contained web server process that logs data from incoming HTTP request.
 
 
-Dependancies:
+Dependencies:
 --------------------
 Redis Server
 Go Redis Client (github.com/fzzy/radix - at least from commit 7059bc0191 or newer)<br/>
