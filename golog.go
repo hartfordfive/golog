@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
-	//"encoding/base64"
 	"./lib"
 	"github.com/abh/geoip"
 	"github.com/fzzy/radix/redis"
@@ -23,7 +22,7 @@ import (
 
 const (
 	pixel         string = "lib/pixel.png"
-	geoip_db_base        = "http://geolite.maxmind.com/download/geoip/database/"
+	geoip_db_base string = "http://geolite.maxmind.com/download/geoip/database/"
 	geoip_db      string = "GeoIP.dat"
 	geoip_db_city string = "GeoLiteCity.dat"
 )
@@ -43,6 +42,7 @@ type LoggerState struct {
 	CurrLogFileHandle *os.File
 	CurrLogFileName   string
 	LogBaseDir        string
+	CookieDomain	  string
 }
 
 var state = LoggerState{}
@@ -89,6 +89,15 @@ func loadGeoIpDb(dbName string) *geoip.GeoIP {
 		fmt.Printf("Warning, could not open GeoIP database: %s\n", geoErr)
 	}
 	return geo
+}
+
+func getUDID() string{
+     f, _ := os.Open("/dev/urandom")
+     b := make([]byte, 16)
+     f.Read(b)
+     f.Close()
+     uuid := fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+     return uuid
 }
 
 func getMonthAsIntString(m string) string {
@@ -161,7 +170,7 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 	action := ""
 	label := ""
 	value := ""
-
+	udid := ""
 	
 	if len(matches) >= 1 {
 
@@ -201,13 +210,13 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 		   redisRes,err := redisClient.Cmd("hexists", "country_hits_"+countryCode, currHour).Bool()
 
 		   // If country exists in hashed set, then increment the value
-		   redisErrHandler(err, "[hexists country_hits_*]")
+		   redisErrHandler(err, "[hexists country_hits_"+countryCode+"]")
 		   if redisRes == true {
 		      _, err = redisClient.Cmd("hincrby", "country_hits_"+countryCode, currHour, 1).Int()
-		      redisErrHandler(err, "[hincrby country_hits_*]")
+		      redisErrHandler(err, "[hincrby country_hits_"+countryCode+"]")
 		   } else {
 		     _, err = redisClient.Cmd("hset", "country_hits_"+countryCode, currHour, 1).Int()
-		     redisErrHandler(err, "[hset country_hits_*]")
+		     redisErrHandler(err, "[hset country_hits_"+countryCode+"]")
 		   }
 
 		   
@@ -215,13 +224,13 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
                    redisRes,err = redisClient.Cmd("hexists", "continent_hits_"+continent, currHour).Bool()
 
                    // If continent exists in hashed set, then increment the value
-                   redisErrHandler(err, "[hexists content_hits+*]")
+                   redisErrHandler(err, "[hexists continent_hits"+countryCode+"]")
                    if redisRes == true {
                       _, err = redisClient.Cmd("hincrby", "continent_hits_"+continent, currHour, 1).Int()
-                      redisErrHandler(err, "[hincrby continent_hits_*]")
+                      redisErrHandler(err, "[hincrby continent_hits_"+countryCode+"]")
                    } else {
                      _, err = redisClient.Cmd("hset", "continent_hits_"+continent, currHour, 1).Int()
-                     redisErrHandler(err, "[hset continent_hits_*]")
+                     redisErrHandler(err, "[hset continent_hits_"+countryCode+"]")
                    }
 
 		}
@@ -251,7 +260,28 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 		value = strings.Replace(params.Get("value"), "~", "-", -1)
 	}
 
-	ln += cid + " ~ " + category + " ~ " + action + " ~ " + label + " ~ " + value + " ~ " + req.Header.Get("User-Agent") + "\n"
+
+	// If the _golog_uuid cookie is not set, then create the uuid and set it
+        cookie := req.Header.Get("Cookie")
+        if cookie != "" {
+                  cookies := strings.Split(cookie, "; ")
+                  fmt.Println(cookies)
+                  for i := 0; i < len(cookies); i++ {
+                      parts := strings.Split(cookies[i], "=")
+                      if parts[0] == "udid" {
+                         udid = parts[1]
+                         break
+                      }
+                  }
+                  // If the cookie isn't found, then generate a udid and then send the cookie
+                  if udid == "" {
+                      y,m,d := time.Now().Date()
+                      expiryTime := time.Date(y, m, d+365, 0, 0, 0, 0, time.UTC)
+                      res.Header().Set("Set-Cookie", "udid="+getUDID()+"; Domain="+state.CookieDomain+"; Path=/; Expires="+expiryTime.Format(time.RFC1123))
+                  }
+        }
+
+	ln += cid + " ~ " + udid + " ~ " + category + " ~ " + action + " ~ " + label + " ~ " + value + " ~ " + req.Header.Get("User-Agent") + "\n"
 
 	state.BuffLines = append(state.BuffLines, ln)
 	state.BuffLineCount++
@@ -294,7 +324,7 @@ func redisErrHandler(err error, stamp string) {
 
 func main() {
 
-	var logBaseDir,ip string
+	var logBaseDir,ip,cDomain string
 	var buffLines, port, redisDb int
 
 	flag.StringVar(&logBaseDir, "d", "/var/log/golog/", "Base directory where log files will be written to")
@@ -302,10 +332,11 @@ func main() {
 	flag.IntVar(&port, "p",80, "Port number to listen on")
 	flag.IntVar(&buffLines, "b", 25, "Number of lines to buffer before dumping to log file")
 	flag.IntVar(&redisDb, "db", 2, "Index of redis DB to use")
-
+	flag.StringVar(&cDomain, "domain", "", "Domain on which to set the udid cookie on.")
 	flag.Parse()
 
 	state.MaxBuffLines = buffLines
+	state.CookieDomain = cDomain
 
 	// Load the transparent PNG pixel into memory once
 	loadOnce.Do(loadPNG)
