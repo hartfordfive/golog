@@ -15,11 +15,11 @@ MaxMind GeoIP Legacy DBs  (http://geolite.maxmind.com/download/geoip/database/)<
 Usage:
 --------------------
 
-`go run golog.go -i [IP] -p [PORT] -b [BUFF_LINES] -db [REDIS_DB_INDEX] -d [LOGFILES_DIRECTORY]`
+`go run golog.go -i [IP] -p [PORT] -b [BUFF_LINES] -db [REDIS_DB_INDEX] -d [LOGFILES_DIRECTORY] -domain [DOMAIN]` 
 
 or with compiled binary:
 
-`./golog -i [IP] -p [PORT] -b [BUFF_LINES] -db [REDIS_DB_INDEX] -d [LOGFILES_DIRECTORY]`
+`./golog -i [IP] -p [PORT] -b [BUFF_LINES] -db [REDIS_DB_INDEX] -d [LOGFILES_DIRECTORY] -domain [DOMAIN]`
 
 
 Parameter details:
