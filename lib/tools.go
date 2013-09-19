@@ -10,6 +10,7 @@ import (
        "path"
        "fmt"
        "strings"
+       "regexp"
 )
 
 const (
@@ -143,4 +144,78 @@ func JoinLists(list1 []string, list2 []string) []string{
      copy(newslice, list1)
      copy(newslice[len(list1):], list2)
      return newslice
+}
+
+
+func GetUserAgentDetails(ua string) map[string]string{
+
+     ua = strings.ToLower(ua);
+
+     //matches = regexp.MustCompile(`(?i)(Windows NT\s+[0-9]\.[0-9]|Android|iOS|FirefoxOS|Windows\s*Phone OS [0-9]\.[0-9]|BlackBerry [0-9]{4,4}|BB10)`).FindStringSubmatch(ua)
+     matches := regexp.MustCompile(`(?i)(Windows NT|Android|iOS|FirefoxOS|Windows\s*Phone OS|BlackBerry|BB10|iphone os)`).FindStringSubmatch(ua)
+
+     deviceData := map[string]string{}
+
+     if len(matches) == 0 {
+     	return deviceData
+     }
+
+     switch strings.ToLower(matches[1]) {
+
+     	    case "windows nt":
+	    	 deviceData["platform"] = "Windows NT"
+		 matches = regexp.MustCompile(`(?i)Windows NT\s+([0-9]+\.[0-9]+)`).FindStringSubmatch(ua)		
+		 if len(matches) >= 2 {
+		    deviceData["os_version"] = matches[1]	    	 
+		 }
+           
+
+            case "windows phone os":
+                 deviceData["platform"] = "Windows Phone"
+                 matches = regexp.MustCompile(`(?i)Windows Phone OS\s+([0-9]+\.[0-9]+);`).FindStringSubmatch(ua)
+		 if len(matches) >= 2 {
+                    deviceData["os_version"] = matches[1]
+		 }
+
+	    case "android":
+	    	 deviceData["platform"] = "Android"
+		 matches = regexp.MustCompile(`(?i)Android\s+([0-9]+\.[0-9]+(\.[0-9]+)*)`).FindStringSubmatch(ua)		 
+		 if len(matches) >= 3 {
+		    deviceData["os_version"] = matches[1]
+		 }
+
+	    case "ios", "iphone os":
+                 deviceData["platform"] = "iOS"
+                 matches = regexp.MustCompile(`(?i)OS\s+([0-9]+_[0-9](_[0-9]+)?)`).FindStringSubmatch(ua)
+		 if len(matches) >= 2 {
+                    deviceData["os_version"] = strings.Replace(matches[1], "_", ".", -1)
+		 }
+
+            case "blackberry", "bb10":
+                 deviceData["platform"] = "BlackBerry"
+                 matches = regexp.MustCompile(`(?i)(Version/([0-9]+\.[0-9]+(\.[0-9]+)*))`).FindStringSubmatch(ua)
+		 if len(matches) >= 2 {
+                    deviceData["os_version"] = matches[2]
+		 }
+		 matches = regexp.MustCompile(`BlackBerry ([0-9]{4,4});`).FindStringSubmatch(ua)
+                 if len(matches) >= 2 {
+                    deviceData["model"] = matches[1]
+                 }
+
+
+	    default:
+     }
+
+     if strings.Contains(ua, "webkit") {
+     	deviceData["rendering_engine"] = "WebKit"
+     } else if strings.Contains(ua, "gecko") {
+       	deviceData["rendering_engine"] = "Gecko"
+     } else if strings.Contains(ua, "trident") {
+        deviceData["rendering_engine"] = "Trident"
+     } else if strings.Contains(ua, "presto") {
+        deviceData["rendering_engine"] = "Presto"
+     }
+
+     return deviceData
+
 }

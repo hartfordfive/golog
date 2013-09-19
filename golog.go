@@ -26,6 +26,7 @@ const (
 	geoip_db_base string = "http://geolite.maxmind.com/download/geoip/database/"
 	geoip_db      string = "GeoIP.dat"
 	geoip_db_city string = "GeoLiteCity.dat"
+	DEBUG	      bool   = true
 )
 
 var (
@@ -50,6 +51,9 @@ type LoggerState struct {
 
 var state = LoggerState{Config: make(map[string]string)}
 
+type StatsHandler struct{}
+type StatsDeviceHandler struct{}
+type LogHandler struct{}
 
 func joinList(list1 []string, list2 []string) []string{
      newslice := make([]string, len(list1) + len(list2))
@@ -100,17 +104,19 @@ func getLogfileName() string {
 	return strconv.Itoa(y) + "-" + tools.GetMonthAsIntString(m.String()) + "-" + strconv.Itoa(d) + "-" + strconv.Itoa(time.Now().Hour()) + "00.txt"
 }
 
-func logHandler(res http.ResponseWriter, req *http.Request) {
+func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
+
 
 	// Take the URI and parse it
 	// If invalid, return tracking pixel immediately and return
 
 	parts, err := url.Parse(req.URL.String())
-	if err != nil {
-		res.Header().Set("Cache-control", "public, max-age=0")
-		res.Header().Set("Content-Type", "image/png")
-		png.Encode(res, pngPixel)
-		return
+	if err != nil || req.URL.Path != "/" {
+	   res.WriteHeader(http.StatusNotFound)
+	   res.Header().Set("Cache-control", "public, max-age=0")
+	   res.Header().Set("Content-Type", "image/png")
+	   //png.Encode(res, pngPixel)
+	   return
 	}
 
 	//Get the current year, month, day and hour (e.g.: YYYY-MM-DD-HHHH) to build the logfile name
@@ -155,49 +161,53 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 		   
 		      if statsOkUntil < 1 {
 		      	 
-			 // First get the keys from hashed set
-		      	 tmpResKeys1, _ := redisClient.Cmd("keys", "continent_hits_*").List()
-			 tmpResKeys2, _ := redisClient.Cmd("keys", "country_hits_*").List()			 
+			 // First get the keys from hashed set			 
+		      	 tmpResKeys1, _ := redisClient.Cmd("KEYS", "continent_hits:*").List()
+			 tmpResKeys2, _ := redisClient.Cmd("KEYS", "country_hits:*").List()			 
 			 resKeys := joinList(tmpResKeys1,tmpResKeys2)			 
-
+			 
 			 // Now delete all keys in hashed set and			
 			 // set the "golog_stats_available" key again with the proper expiry time
-			 redisClient.Append("hdel", resKeys, expiryTime.Unix())
-			 redisClient.Append("set", "golog_stats_available", 1)
-			 redisClient.Append("expireat", "golog_stats_available", expiryTime.Unix())			 
+			 redisClient.Append("ZREM", resKeys)
+			 redisClient.Append("SET", "golog_stats_available", 1)
+			 redisClient.Append("EXPIREAT", "golog_stats_available", expiryTime.Unix())			 
 			 redisClient.GetReply()		
 		       }
                    }
 
 		   
-		   // Increment the necessary "Country" related counters in the hashed set
-		   redisRes,err := redisClient.Cmd("hexists", "country_hits_"+countryCode, currHour).Bool()
+		   // Increment the necessary "Country" and "Continent" hit related counters in the hashed set
+		   for _,keyPrefix := range []string{"continent_hits", "country_hits"} {		       
+			
+			member := ""
+			if keyPrefix == "continent_hits" {
+			   member = continent
+			}  else {
+			   member = countryCode
+			}
 
-		   // If country exists in hashed set, then increment the value
-		   redisErrHandler(err, "[hexists country_hits_"+countryCode+"]")
-		   if redisRes == true {
-		      _, err = redisClient.Cmd("hincrby", "country_hits_"+countryCode, currHour, 1).Int()
-		      redisErrHandler(err, "[hincrby country_hits_"+countryCode+"]")
-		   } else {
-		     _, err = redisClient.Cmd("hset", "country_hits_"+countryCode, currHour, 1).Int()
-		     redisErrHandler(err, "[hset country_hits_"+countryCode+"]")
+		   	if DEBUG { fmt.Println("Redis Operation [ZSCORE  "+keyPrefix+":"+currHour+" "+member+"]") }
+		   	redisRes,err := redisClient.Cmd("ZSCORE", keyPrefix+":"+currHour, member).Int()
+		   	redisErrHandler(err, "[ZSCORE  "+keyPrefix+":"+currHour+" "+member+"]")
+			
+		   	if string(redisRes) != "<nil>" {
+		      	   if DEBUG { fmt.Println("Redis Operation [ZINCRBY "+keyPrefix+":"+currHour+" 1 "+member+"]") }
+		      	   _, err = redisClient.Cmd("ZINCRBY", keyPrefix+":"+currHour , 1, member).Int()
+		      	   redisErrHandler(err, "[ZINCRBY "+keyPrefix+":"+currHour+" 1 "+member+"]")
+		   	} else {		     	
+			   if DEBUG { fmt.Println("Redis Operation [ZADD "+keyPrefix+":"+currHour+" 1 "+member+"]")  }
+		     	   _, err = redisClient.Cmd("ZADD", keyPrefix+":"+currHour, 1, member).Int()
+		     	   redisErrHandler(err, "[ZADD "+keyPrefix+":"+currHour+" 1 "+member+"]")
+		   	}
 		   }
 
+
+		   // ************  Now create the stats related to Device user agents *******************		
+		   deviceDetails := tools.GetUserAgentDetails(req.Header.Get("User-Agent"))
+		   fmt.Println(deviceDetails)
 		   
-		   // Now increment the necessary "Continent" related counters in the hashed set
-                   redisRes,err = redisClient.Cmd("hexists", "continent_hits_"+continent, currHour).Bool()
 
-                   // If continent exists in hashed set, then increment the value
-                   redisErrHandler(err, "[hexists continent_hits"+countryCode+"]")
-                   if redisRes == true {
-                      _, err = redisClient.Cmd("hincrby", "continent_hits_"+continent, currHour, 1).Int()
-                      redisErrHandler(err, "[hincrby continent_hits_"+countryCode+"]")
-                   } else {
-                     _, err = redisClient.Cmd("hset", "continent_hits_"+continent, currHour, 1).Int()
-                     redisErrHandler(err, "[hset continent_hits_"+countryCode+"]")
-                   }
-
-		}
+		} // END of "redisClient != nil" condition
 
 	}
 
@@ -280,44 +290,84 @@ func logHandler(res http.ResponseWriter, req *http.Request) {
 }
 
 
-func statsHandler(res http.ResponseWriter, req *http.Request) {
+/*
+func (sh *StatsDeviceHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
+
+     if req.URL.Path != "/statsdevices" {
+          res.WriteHeader(http.StatusNotFound)
+          res.Header().Set("Cache-control", "public, max-age=0")
+          res.Header().Set("Content-Type", "text/html")
+          fmt.Fprintf(res, "Invalid path")
+          return
+      }
      
 
+}
+*/
+
+
+func (sh *StatsHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
+         
+      if req.URL.Path != "/stats" {
+      	  res.WriteHeader(http.StatusNotFound)
+	  res.Header().Set("Cache-control", "public, max-age=0")
+     	  res.Header().Set("Content-Type", "text/html")          
+	  fmt.Fprintf(res, "Invalid path")
+      	  return 
+      }
+
       // Get the list of all keys to fetch
-      resList1,_ := redisClient.Cmd("keys", "country_hits_*").List()
-      resList2,_ := redisClient.Cmd("keys", "continent_hits_*").List()
+      resList1,_ := redisClient.Cmd("keys", "country_hits*").List()
+      resList2,_ := redisClient.Cmd("keys", "continent_hits*").List()
       resList := tools.JoinLists(resList1,resList2)
 
-      // Now initialize a map with the key being the each individual redis key
-      resMap := make(map[string]map[string]string)
-      for i := 0; i < len(resList); i++ {
-      	  resMap[resList[i]] = make(map[string]string)
-      }
 
-      // Now pipline all the commands
-      for i := 0; i < len(resList); i ++ {
-	  redisClient.Append("hgetall", resList[i])
-      }
+     // Initalize the array with 24 indexes and for each key in the restList, populate the map
+     /* SAMPLE MAP
+     returnData := map[string]map[string]map[string]int {
+     		"country_hits": map[string]map[string]int{
+			"14": map[string]int{
+			      "CA" : 4, 
+			      "US": 2, 
+			      "ES": 5,
+			},
+		},
+		"continent_hits": map[string]map[string]int{
+		        "14": map[string]int{
+			      "NA": 6,
+			      "UE": 5,
+			},
+		},
+     }
+     */
 
-      // Finally read all the results in the same order they were submited to redis
-      for k,_ := range resMap {
-           r := redisClient.GetReply()
-	   s,_ := r.Hash()
-	   resMap[k] = s
-      }
+     returnData := map[string]map[string]map[string]int {
+                "country_hits": map[string]map[string]int{},
+                "continent_hits": map[string]map[string]int{},
+     }
 
-     // Encode the list into JSON
-     data,err := json.Marshal(resMap)
-         
+     // Itterate over each key, and get it's data
+     for i := 0; i < len(resList); i++ {
+     	 parts := strings.Split(resList[i],":")
+	 returnData[parts[0]][parts[1]] = map[string]int{}
+	 resList3,_ := redisClient.Cmd("ZRANGE", resList[i], 0 , -1, "WITHSCORES").List()
+	 // Initialize the map at this index and itterate over the zrange results to populate the return map
+	 for j := 0; j < len(resList3); j++ {
+	     val,_ := strconv.Atoi(resList3[j+1])
+	     returnData[parts[0]][parts[1]][resList3[j]] =  val	 
+	     j++
+	 }
+     }
+
+     data1,err1 := json.Marshal(returnData)
      res.Header().Set("Cache-control", "public, max-age=0")
-     res.Header().Set("Content-Type", "application/json")     
-     if err == nil {
-          fmt.Fprintf(res, string(data))
+     res.Header().Set("Content-Type", "application/json")
+     if err1 == nil {
+          fmt.Fprintf(res, string(data1))
      } else {
        fmt.Fprintf(res, "{\"status\": \"error\"}")
      }
      return
-
 
 }
 
@@ -415,7 +465,7 @@ func loadConfig(filePath string) map[string]string{
 
 func main() {
 
-	var logBaseDir, ip, cDomain, config, reportingIp string
+	var logBaseDir, ip, cDomain, config, reportingIp, flushRedisDb string
 	var buffLines, port, redisDb, reportingActive, reportingPort int
 	
 	flag.StringVar(&logBaseDir, "d", "/var/log/golog/", "Base directory where log files will be written to")
@@ -423,6 +473,7 @@ func main() {
 	flag.IntVar(&port, "p", 80, "Port number to listen on")
 	flag.IntVar(&buffLines, "b", 25, "Number of lines to buffer before dumping to log file")
 	flag.IntVar(&redisDb, "db", 2, "Index of redis DB to use")
+	flag.StringVar(&flushRedisDb, "flushredis", "0", "Option to flush redis db on startup")
 	flag.StringVar(&cDomain, "domain", "", "Domain on which to set the udid cookie on.")
 
 	flag.IntVar(&reportingActive, "stats", 0, "Enable status reporting on [IP]:[PORT]")
@@ -453,6 +504,7 @@ func main() {
 	  state.Config["port"] = strconv.Itoa(port)
 	  state.Config["buffLines"] = strconv.Itoa(buffLines)
 	  state.Config["redisDb"] = strconv.Itoa(redisDb)
+	  state.Config["flushRedisDb"] = flushRedisDb
 	  state.Config["cDomain"] = cDomain
 	  state.Config["reportingActive"] = strconv.Itoa(reportingActive)
 	  if reportingActive == 1 {
@@ -502,47 +554,74 @@ func main() {
 	redisErrHandler(redisErr, "[1 - tcp connect]")
 	redisClient = c
 
+ 	// select database and flush it
+        r := redisClient.Cmd("select", redisDb)
+        redisErrHandler(r.Err, "[2 - select]")
+	if state.Config["flushRedisDb"] == "1" {
+           r = redisClient.Cmd("flushdb")
+           redisErrHandler(r.Err, "[3 - flushdb]")
+	}
+
+
 	// Now set a simple object with a TTL of tomorrow at 00:00:00 so that any stats will get reset
 	_, redisErr = redisClient.Cmd("set", "golog_stats_available", 1).Str()
-	redisErrHandler(redisErr, "[2 - set golog_stats_available]")
+	redisErrHandler(redisErr, "[4 - set golog_stats_available]")
 
 	if redisErr == nil {
 	   t := time.Now()
            y,m,d := t.Date()
            expiryTime := time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
 	   _, redisErr = redisClient.Cmd("expireat", "golog_stats_available", int(expiryTime.Unix())).Int()
-	   redisErrHandler(redisErr, "[3 - expireat golog_stats_available]")
+	   redisErrHandler(redisErr, "[5 - expireat golog_stats_available]")
 	}
 
 	defer redisClient.Close()
 
-	// select database
-	r := redisClient.Cmd("select", redisDb)
-	redisErrHandler(r.Err, "[4 - select]")
+	wg := &sync.WaitGroup{}
 
-	http.HandleFunc("/", logHandler)
-	fmt.Println("Logging server started on "+state.Config["ip"]+":"+state.Config["port"])
+	//http.HandleFunc("/stats", statsHandler)
 
 	// Finally start the reporting server if it's been enabled
 	if state.Config["reportingActive"] == "1" {
 	   // Start the second process in a seperate go thread so that it can respond and listen only to relevant requests
+	   wg.Add(1)
 	   go func() {
-	   	   http.HandleFunc("/stats", statsHandler)
-           	   err := http.ListenAndServe(state.Config["reportingIp"]+":"+state.Config["reportingPort"], nil)
+	   	   //http.HandleFunc("/stats", statsHandler)
+           	   err := http.ListenAndServe(state.Config["reportingIp"]+":"+state.Config["reportingPort"], &StatsHandler{})
+		   wg.Done()
 		   if err != nil {
               	      fmt.Println("GoLog Error:", err)
              	      os.Exit(0)
            	   }
 	   }()
-	   fmt.Println("Reporting server started on "+state.Config["reportingIp"]+":"+state.Config["reportingPort"])
+	   /*
+	   wg.Add(1)
+           go func() {           
+                   err := http.ListenAndServe(state.Config["reportingIp"]+":"+state.Config["reportingPort"], &StatsDeviceHandler{})
+                   wg.Done()
+                   if err != nil {
+                      fmt.Println("GoLog Error:", err)
+                      os.Exit(0)
+                   }
+           }()
+	   */
+           fmt.Println("Reporting server started on "+state.Config["reportingIp"]+":"+state.Config["reportingPort"])
+
 	}
 
 
-	err := http.ListenAndServe(state.Config["ip"]+":"+state.Config["port"], nil)
-        if err != nil {
-           fmt.Println("GoLog Error:", err)
-           os.Exit(0)
-        }
+	wg.Add(1)
+	go func() {
+	   err := http.ListenAndServe(state.Config["ip"]+":"+state.Config["port"], &LogHandler{})
+           if err != nil {
+              fmt.Println("GoLog Error:", err)
+              os.Exit(0)
+           }
+	   wg.Done()
+	}()
 
+	fmt.Println("Logging server started on "+state.Config["ip"]+":"+state.Config["port"])
+
+	wg.Wait()
 
 }
