@@ -104,6 +104,33 @@ func getLogfileName() string {
 	return strconv.Itoa(y) + "-" + tools.GetMonthAsIntString(m.String()) + "-" + strconv.Itoa(d) + "-" + strconv.Itoa(time.Now().Hour()) + "00.txt"
 }
 
+
+func getGeoLocationStats(resList []string) map[string]map[string]map[string]int{
+
+     returnData := map[string]map[string]map[string]int {
+                "country_hits": map[string]map[string]int{},
+                "continent_hits": map[string]map[string]int{},
+     }
+
+     // Itterate over each key, and get it's data
+     for i := 0; i < len(resList); i++ {
+         parts := strings.Split(resList[i],":")
+         returnData[parts[0]][parts[1]] = map[string]int{}
+         resList3,_ := redisClient.Cmd("ZRANGE", resList[i], 0 , -1, "WITHSCORES").List()
+         // Initialize the map at this index and itterate over the zrange results to populate the return map
+         for j := 0; j < len(resList3); j++ {
+             val,_ := strconv.Atoi(resList3[j+1])
+             returnData[parts[0]][parts[1]][resList3[j]] =  val
+             j++
+         }
+     }
+
+     return returnData
+
+}
+
+
+
 func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 
@@ -161,9 +188,17 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 		   
 		      if statsOkUntil < 1 {
 		      	 
-			 // First get the keys from hashed set			 
+
+			 // Export the data in a json format and write it to a log file			 
+			 resList1,_ := redisClient.Cmd("keys", "country_hits*").List()
+      			 resList2,_ := redisClient.Cmd("keys", "continent_hits*").List()
+  			 dataToDump,_ = json.Marshal(getGeoLocationStats(tools.JoinLists(resList1,resList2)))
+			 
+
+			 // Now get the keys from hashed set			 
 		      	 tmpResKeys1, _ := redisClient.Cmd("KEYS", "continent_hits:*").List()
 			 tmpResKeys2, _ := redisClient.Cmd("KEYS", "country_hits:*").List()			 
+			 //tmpResKeys3, _ := redisClient.Cmd("KEYS", "device_stats:*").List()
 			 resKeys := joinList(tmpResKeys1,tmpResKeys2)			 
 			 
 			 // Now delete all keys in hashed set and			
@@ -203,9 +238,10 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 
 		   // ************  Now create the stats related to Device user agents *******************		
-		   deviceDetails := tools.GetUserAgentDetails(req.Header.Get("User-Agent"))
-		   fmt.Println(deviceDetails)
-		   
+		   //deviceDetails := tools.GetUserAgentDetails(req.Header.Get("User-Agent"))
+		   //fmt.Println(deviceDetails)
+
+		   		   
 
 		} // END of "redisClient != nil" condition
 
@@ -302,6 +338,35 @@ func (sh *StatsDeviceHandler) ServeHTTP(res http.ResponseWriter, req *http.Reque
       }
      
 
+     returnData := map[string]map[string]map[string]int {
+                "country_hits": map[string]map[string]int{},
+                "continent_hits": map[string]map[string]int{},
+     }
+
+     // Itterate over each key, and get it's data
+     for i := 0; i < len(resList); i++ {
+         parts := strings.Split(resList[i],":")
+         returnData[parts[0]][parts[1]] = map[string]int{}
+         resList3,_ := redisClient.Cmd("ZRANGE", resList[i], 0 , -1, "WITHSCORES").List()
+         // Initialize the map at this index and itterate over the zrange results to populate the return map
+         for j := 0; j < len(resList3); j++ {
+             val,_ := strconv.Atoi(resList3[j+1])
+             returnData[parts[0]][parts[1]][resList3[j]] =  val
+             j++
+         }
+     }
+
+     data1,err1 := json.Marshal(returnData)
+     res.Header().Set("Cache-control", "public, max-age=0")
+     res.Header().Set("Content-Type", "application/json")
+     if err1 == nil {
+          fmt.Fprintf(res, string(data1))
+     } else {
+       fmt.Fprintf(res, "{\"status\": \"error\"}")
+     }
+     return
+
+
 }
 */
 
@@ -323,43 +388,7 @@ func (sh *StatsHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 
      // Initalize the array with 24 indexes and for each key in the restList, populate the map
-     /* SAMPLE MAP
-     returnData := map[string]map[string]map[string]int {
-     		"country_hits": map[string]map[string]int{
-			"14": map[string]int{
-			      "CA" : 4, 
-			      "US": 2, 
-			      "ES": 5,
-			},
-		},
-		"continent_hits": map[string]map[string]int{
-		        "14": map[string]int{
-			      "NA": 6,
-			      "UE": 5,
-			},
-		},
-     }
-     */
-
-     returnData := map[string]map[string]map[string]int {
-                "country_hits": map[string]map[string]int{},
-                "continent_hits": map[string]map[string]int{},
-     }
-
-     // Itterate over each key, and get it's data
-     for i := 0; i < len(resList); i++ {
-     	 parts := strings.Split(resList[i],":")
-	 returnData[parts[0]][parts[1]] = map[string]int{}
-	 resList3,_ := redisClient.Cmd("ZRANGE", resList[i], 0 , -1, "WITHSCORES").List()
-	 // Initialize the map at this index and itterate over the zrange results to populate the return map
-	 for j := 0; j < len(resList3); j++ {
-	     val,_ := strconv.Atoi(resList3[j+1])
-	     returnData[parts[0]][parts[1]][resList3[j]] =  val	 
-	     j++
-	 }
-     }
-
-     data1,err1 := json.Marshal(returnData)
+     data1,err1 := json.Marshal(getGeoLocationStats(resList))
      res.Header().Set("Cache-control", "public, max-age=0")
      res.Header().Set("Content-Type", "application/json")
      if err1 == nil {
