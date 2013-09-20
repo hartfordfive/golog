@@ -98,6 +98,15 @@ func loadGeoIpDb(dbName string) *geoip.GeoIP {
 	return geo
 }
 
+func writeToFile(filePath string, dataToDump string) int{
+      fh, _ := os.Create(filePath)
+      defer fh.Close()
+      nb,_ := fh.WriteString(string(dataToDump))
+      fh.Sync()
+      if DEBUG { fmt.Println("Wrote "+strconv.Itoa(nb)+" bytes to "+filePath) }
+      return nb
+}
+
 
 func getLogfileName() string {
 	y, m, d := time.Now().Date()
@@ -106,6 +115,30 @@ func getLogfileName() string {
 
 
 func getGeoLocationStats(resList []string) map[string]map[string]map[string]int{
+
+     returnData := map[string]map[string]map[string]int {
+                "country_hits": map[string]map[string]int{},
+                "continent_hits": map[string]map[string]int{},
+     }
+
+     // Itterate over each key, and get it's data
+     for i := 0; i < len(resList); i++ {
+         parts := strings.Split(resList[i],":")
+         returnData[parts[0]][parts[1]] = map[string]int{}
+         resList3,_ := redisClient.Cmd("ZRANGE", resList[i], 0 , -1, "WITHSCORES").List()
+         // Initialize the map at this index and itterate over the zrange results to populate the return map
+         for j := 0; j < len(resList3); j++ {
+             val,_ := strconv.Atoi(resList3[j+1])
+             returnData[parts[0]][parts[1]][resList3[j]] =  val
+             j++
+         }
+     }
+
+     return returnData
+
+}
+
+func getDeviceStats(resList []string) map[string]map[string]map[string]int{
 
      returnData := map[string]map[string]map[string]int {
                 "country_hits": map[string]map[string]int{},
@@ -183,31 +216,40 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 				
 		   // First check if the redis pool for the "golog_stats_available" object. If not present, then reset
 		   // all stats and set this object once again to expiry tomorrow at 00h:00m:00s
-		   statsOkUntil, err := redisClient.Cmd("ttl", "golog_stats_available").Int()
-                   if err == nil {
+		   statsOkUntil, err := redisClient.Cmd("TTL", "golog_stats_available").Int()
 		   
-		      if statsOkUntil < 1 {
-		      	 
-
-			 // Export the data in a json format and write it to a log file			 
-			 resList1,_ := redisClient.Cmd("keys", "country_hits*").List()
-      			 resList2,_ := redisClient.Cmd("keys", "continent_hits*").List()
-  			 dataToDump,_ = json.Marshal(getGeoLocationStats(tools.JoinLists(resList1,resList2)))
-			 
-
-			 // Now get the keys from hashed set			 
+                   if err == nil  && statsOkUntil <= 1 {
+		   
+			 // Get all the keys to be deleted			 
 		      	 tmpResKeys1, _ := redisClient.Cmd("KEYS", "continent_hits:*").List()
-			 tmpResKeys2, _ := redisClient.Cmd("KEYS", "country_hits:*").List()			 
-			 //tmpResKeys3, _ := redisClient.Cmd("KEYS", "device_stats:*").List()
-			 resKeys := joinList(tmpResKeys1,tmpResKeys2)			 
+			 tmpResKeys2, _ := redisClient.Cmd("KEYS", "country_hits:*").List()			 			 			 
+			 resKeys := joinList(tmpResKeys1,tmpResKeys2)			  
 			 
+			 // Export the data in a json format and write it to a log file
+			 dataToDump,_ := json.Marshal(getGeoLocationStats(resKeys))
+	
+			 basePath := strings.TrimRight(state.LogBaseDir, "/") + "/" 
+        		 _ = writeToFile(basePath + "daily_geo_stats-" + strconv.Itoa(y) + "-" + strconv.Itoa(int(m)) + "-" + strconv.Itoa(d)+".json", string(dataToDump))
+
+			 // Now dump the device stats
+			 resKeys2, _ := redisClient.Cmd("KEYS", "device_stats:" + strconv.Itoa(y) + strconv.Itoa(int(m)) + strconv.Itoa((d-1)) + ":*").List()
+                         dataToDump,_ = json.Marshal(getDeviceStats(resKeys2))
+			 _ = writeToFile(basePath + "daily_device_stats-" + strconv.Itoa(y) + "-" + strconv.Itoa(int(m)) + "-" + strconv.Itoa(d) + ".json", string(dataToDump))
+			 
+
 			 // Now delete all keys in hashed set and			
 			 // set the "golog_stats_available" key again with the proper expiry time
-			 redisClient.Append("ZREM", resKeys)
+			 
+			 for i := 0; i < len(resKeys); i++ {
+			     redisClient.Append("ZREMRANGEBYRANK", resKeys[i], 0, -1)
+			 }
 			 redisClient.Append("SET", "golog_stats_available", 1)
 			 redisClient.Append("EXPIREAT", "golog_stats_available", expiryTime.Unix())			 
 			 redisClient.GetReply()		
-		       }
+
+			 if DEBUG {
+			    fmt.Println("NOTICE: All related keys from yesterday have been reset.")
+			 }
                    }
 
 		   
@@ -238,8 +280,23 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 
 		   // ************  Now create the stats related to Device user agents *******************		
-		   //deviceDetails := tools.GetUserAgentDetails(req.Header.Get("User-Agent"))
+		   deviceDetails := tools.GetUserAgentDetails(req.Header.Get("User-Agent"))
 		   //fmt.Println(deviceDetails)
+ 
+		   if DEBUG { fmt.Println("Redis Operation [ZINCRBY device_stats:platform:"+tools.YmdToString() + " 1 " + deviceDetails["platform"] + "]")  }
+                   redisClient.Append("ZINCRBY", "device_stats:platform:"+tools.YmdToString(), 1, deviceDetails["platform"])
+		   
+		   if DEBUG { fmt.Println("Redis Operation [ZINCRBY device_stats:os_version:"+tools.YmdToString() + " 1 " + deviceDetails["platform"]+" - "+deviceDetails["os_version"]+"]")  }
+                   redisClient.Append("ZINCRBY", "device_stats:os_version:"+tools.YmdToString(), 1, deviceDetails["platform"]+" - "+deviceDetails["os_version"])
+		   
+		   if DEBUG { fmt.Println("Redis Operation [ZINCRBY device_stats:rendering_engine:"+tools.YmdToString() + " 1 " + deviceDetails["rendering_engine"]+"]")  }
+                   redisClient.Append("ZINCRBY", "device_stats:rendering_engine:"+tools.YmdToString(), 1, deviceDetails["rendering_engine"])
+
+		   if DEBUG { fmt.Println("Redis Operation [ZINCRBY device_stats:browser:"+tools.YmdToString() + " 1 " + deviceDetails["browser"]+"]")  }
+                   redisClient.Append("ZINCRBY", "device_stats:browser:"+tools.YmdToString(), 1, deviceDetails["browser"])
+
+		   
+
 
 		   		   
 
@@ -326,7 +383,7 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 }
 
 
-/*
+/*  WORK IN PROGRESS....
 func (sh *StatsDeviceHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
      if req.URL.Path != "/statsdevices" {
@@ -337,26 +394,16 @@ func (sh *StatsDeviceHandler) ServeHTTP(res http.ResponseWriter, req *http.Reque
           return
       }
      
+     / Get the list of all keys to fetch
+      resList,_ := redisClient.Cmd("keys", "country_hits*").List()
 
-     returnData := map[string]map[string]map[string]int {
-                "country_hits": map[string]map[string]int{},
-                "continent_hits": map[string]map[string]int{},
-     }
+      resKeys2, _ := redisClient.Cmd("KEYS", "device_stats:" + strconv.Itoa(y) + strconv.Itoa(int(m)) + strconv.Itoa((d-1)) + ":*").List()
+      dataToDump,_ = json.Marshal(getDeviceStats(resKeys2))
 
-     // Itterate over each key, and get it's data
-     for i := 0; i < len(resList); i++ {
-         parts := strings.Split(resList[i],":")
-         returnData[parts[0]][parts[1]] = map[string]int{}
-         resList3,_ := redisClient.Cmd("ZRANGE", resList[i], 0 , -1, "WITHSCORES").List()
-         // Initialize the map at this index and itterate over the zrange results to populate the return map
-         for j := 0; j < len(resList3); j++ {
-             val,_ := strconv.Atoi(resList3[j+1])
-             returnData[parts[0]][parts[1]][resList3[j]] =  val
-             j++
-         }
-     }
 
-     data1,err1 := json.Marshal(returnData)
+
+     // Initalize the array with 24 indexes and for each key in the restList, populate the map
+     data1,err1 := json.Marshal(getDeviceStats(resList))
      res.Header().Set("Cache-control", "public, max-age=0")
      res.Header().Set("Content-Type", "application/json")
      if err1 == nil {
