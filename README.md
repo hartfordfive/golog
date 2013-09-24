@@ -40,3 +40,4 @@ HTTP URL Format:
 `http://[DOMAIN]:[PORT]?cid=[CID]&category=[CATEGORY]&action=[ACTION]&label=[LABEL]&value=[VALUE]&rnd=[RAND_INT]`
 
 
+[![githalytics.com alpha](https://cruel-carlota.pagodabox.com/f70384f88bf609745a1ae8a3d9255f01 "githalytics.com")](http://githalytics.com/hartfordfive/golog)
