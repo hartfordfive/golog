@@ -7,8 +7,9 @@ import (
 	"./lib"
 	"github.com/abh/geoip"
 	"github.com/fzzy/radix/redis"
-	"image"
-	"image/png"
+	//"image"
+	//"image/png"
+	//"bytes"
 	"net/url"
 	"os"
 	"regexp"
@@ -17,21 +18,27 @@ import (
 	"sync"
 	"time"
 	"encoding/json"
+	"encoding/base64"
+	"io"
 )
 
 // Struct that contains the runtime properties including the buffered bytes to be written
 
 const (
-	pixel         string = "lib/pixel.png"
+	PIXEL         string = "lib/pixel.png"
+	PNGPX_B64     string = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP6zwAAAgcBApocMXEAAAAASUVORK5CYII="
 	geoip_db_base string = "http://geolite.maxmind.com/download/geoip/database/"
 	geoip_db      string = "GeoIP.dat"
 	geoip_db_city string = "GeoLiteCity.dat"
 	DEBUG	      bool   = true
+	VERSION_MAJOR  int    = 0
+	VERSION_MINOR  int    = 1
+	VERSION_PATCH  int    = 0
 )
 
 var (
 	loadOnce sync.Once
-	pngPixel image.Image
+	pngPixel []byte
 	geo      *geoip.GeoIP
 	redisClient *redis.Client
 )
@@ -55,25 +62,12 @@ type StatsHandler struct{}
 type StatsDeviceHandler struct{}
 type LogHandler struct{}
 
-func joinList(list1 []string, list2 []string) []string{
-     newslice := make([]string, len(list1) + len(list2))
-     copy(newslice, list1)
-     copy(newslice[len(list1):], list2)
-     return newslice
+func getVersion() string {
+     return strconv.Itoa(VERSION_MAJOR)+"."+strconv.Itoa(VERSION_MINOR)+"."+strconv.Itoa(VERSION_PATCH)
 }
 
-
-func loadPNG() {
-	f, err := os.Open(pixel)
-	if err != nil {
-		panic(err)
-	}
-	defer f.Close()
-	m, err := png.Decode(f)
-	if err != nil {
-		panic(err)
-	}
-	pngPixel = m
+func loadPNG(){
+     pngPixel,_ = base64.StdEncoding.DecodeString(PNGPX_B64)
 }
 
 func getInfo(ip string) (string, string, string, string) {
@@ -135,25 +129,31 @@ func getGeoLocationStats(resList []string) map[string]map[string]map[string]int{
      }
 
      return returnData
-
 }
 
-func getDeviceStats(resList []string) map[string]map[string]map[string]int{
+func getDeviceStats() map[string]map[string]int{
 
-     returnData := map[string]map[string]map[string]int {
-                "country_hits": map[string]map[string]int{},
-                "continent_hits": map[string]map[string]int{},
+     returnData := map[string]map[string]int {
+                "platform": map[string]int{},
+		"os_version": map[string]int{},
+                "browser": map[string]int{},
+		"rendering_engine": map[string]int{},
+		"model": map[string]int{},
      }
 
+
      // Itterate over each key, and get it's data
-     for i := 0; i < len(resList); i++ {
-         parts := strings.Split(resList[i],":")
-         returnData[parts[0]][parts[1]] = map[string]int{}
-         resList3,_ := redisClient.Cmd("ZRANGE", resList[i], 0 , -1, "WITHSCORES").List()
+     for k,_ := range returnData {
+
+         returnData[k] = map[string]int{}
+	 if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] ZRANGE device_stats:"+k+":"+tools.YmdToString() + " 0 -1 WITHSCORES") }
+
+         resList3,_ := redisClient.Cmd("ZRANGE", "device_stats:"+k+":"+tools.YmdToString(), 0 , -1, "WITHSCORES").List()	 
+
          // Initialize the map at this index and itterate over the zrange results to populate the return map
          for j := 0; j < len(resList3); j++ {
              val,_ := strconv.Atoi(resList3[j+1])
-             returnData[parts[0]][parts[1]][resList3[j]] =  val
+             returnData[k][resList3[j]] =  val
              j++
          }
      }
@@ -174,8 +174,7 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 	if err != nil || req.URL.Path != "/" {
 	   res.WriteHeader(http.StatusNotFound)
 	   res.Header().Set("Cache-control", "public, max-age=0")
-	   res.Header().Set("Content-Type", "image/png")
-	   //png.Encode(res, pngPixel)
+	   res.Header().Set("Content-Type", "text/html")
 	   return
 	}
 
@@ -212,29 +211,51 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 		y,m,d := t.Date()
 		expiryTime := time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
 
+		if DEBUG {
+		   active := ""
+		   if redisClient != nil { active = "yes" } else { active = "no" }
+                   fmt.Println("["+tools.DateStampAsString()+"] Redis instance active?: "+active )
+                }
+
+
 		if redisClient != nil {
 				
 		   // First check if the redis pool for the "golog_stats_available" object. If not present, then reset
 		   // all stats and set this object once again to expiry tomorrow at 00h:00m:00s
 		   statsOkUntil, err := redisClient.Cmd("TTL", "golog_stats_available").Int()
 		   
-                   if err == nil  && statsOkUntil <= 1 {
+		   if DEBUG {
+                           fmt.Println("["+tools.DateStampAsString()+"] Redis command: TTL golog_stats_available (Response: "+strconv.Itoa(statsOkUntil)+")")
+                   }
+
+                   if err == nil  && statsOkUntil < 1 {
 		   
+			if DEBUG {
+			   fmt.Println("["+tools.DateStampAsString()+"] NOTICE: Reseting all keys to restart logging period.")
+		   	}
+
 			 // Get all the keys to be deleted			 
 		      	 tmpResKeys1, _ := redisClient.Cmd("KEYS", "continent_hits:*").List()
 			 tmpResKeys2, _ := redisClient.Cmd("KEYS", "country_hits:*").List()			 			 			 
-			 resKeys := joinList(tmpResKeys1,tmpResKeys2)			  
+			 resKeys := tools.JoinLists(tmpResKeys1,tmpResKeys2)			  
 			 
 			 // Export the data in a json format and write it to a log file
 			 dataToDump,_ := json.Marshal(getGeoLocationStats(resKeys))
 	
-			 basePath := strings.TrimRight(state.LogBaseDir, "/") + "/" 
-        		 _ = writeToFile(basePath + "daily_geo_stats-" + strconv.Itoa(y) + "-" + strconv.Itoa(int(m)) + "-" + strconv.Itoa(d)+".json", string(dataToDump))
+			  if DEBUG {
+                           fmt.Println("["+tools.DateStampAsString()+"] NOTICE: Writing geo location stats from previous day to JSON file in "+state.Config["logBaseDir"])
+                        }
 
-			 // Now dump the device stats
-			 resKeys2, _ := redisClient.Cmd("KEYS", "device_stats:" + strconv.Itoa(y) + strconv.Itoa(int(m)) + strconv.Itoa((d-1)) + ":*").List()
-                         dataToDump,_ = json.Marshal(getDeviceStats(resKeys2))
-			 _ = writeToFile(basePath + "daily_device_stats-" + strconv.Itoa(y) + "-" + strconv.Itoa(int(m)) + "-" + strconv.Itoa(d) + ".json", string(dataToDump))
+
+        		 _ = writeToFile(state.Config["logBaseDir"] + "_daily_geo_stats-" + strconv.Itoa(y) + "-" + strconv.Itoa(int(m)) + "-" + strconv.Itoa(d)+".json", string(dataToDump))
+
+			 // Now dump the device stats		
+			  if DEBUG {
+                           fmt.Println("["+tools.DateStampAsString()+"] NOTICE: Writing device stats from previous day to JSON file in "+state.Config["logBaseDir"])
+                        }
+
+                         dataToDump,_ = json.Marshal(getDeviceStats())
+			 _ = writeToFile(state.Config["logBaseDir"] + "_daily_device_stats-" + strconv.Itoa(y) + "-" + strconv.Itoa(int(m)) + "-" + strconv.Itoa(d) + ".json", string(dataToDump))
 			 
 
 			 // Now delete all keys in hashed set and			
@@ -248,7 +269,7 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 			 redisClient.GetReply()		
 
 			 if DEBUG {
-			    fmt.Println("NOTICE: All related keys from yesterday have been reset.")
+			    fmt.Println("["+tools.DateStampAsString()+"] NOTICE: All related keys from yesterday have been reset.")
 			 }
                    }
 
@@ -263,42 +284,39 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 			   member = countryCode
 			}
 
-		   	if DEBUG { fmt.Println("Redis Operation [ZSCORE  "+keyPrefix+":"+currHour+" "+member+"]") }
+		   	if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZSCORE  "+keyPrefix+":"+currHour+" "+member+"]") }
 		   	redisRes,err := redisClient.Cmd("ZSCORE", keyPrefix+":"+currHour, member).Int()
 		   	redisErrHandler(err, "[ZSCORE  "+keyPrefix+":"+currHour+" "+member+"]")
 			
 		   	if string(redisRes) != "<nil>" {
-		      	   if DEBUG { fmt.Println("Redis Operation [ZINCRBY "+keyPrefix+":"+currHour+" 1 "+member+"]") }
+		      	   if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY "+keyPrefix+":"+currHour+" 1 "+member+"]") }
 		      	   _, err = redisClient.Cmd("ZINCRBY", keyPrefix+":"+currHour , 1, member).Int()
-		      	   redisErrHandler(err, "[ZINCRBY "+keyPrefix+":"+currHour+" 1 "+member+"]")
+		      	   redisErrHandler(err, "["+tools.DateStampAsString()+"] [ZINCRBY "+keyPrefix+":"+currHour+" 1 "+member+"]")
 		   	} else {		     	
-			   if DEBUG { fmt.Println("Redis Operation [ZADD "+keyPrefix+":"+currHour+" 1 "+member+"]")  }
+			   if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZADD "+keyPrefix+":"+currHour+" 1 "+member+"]")  }
 		     	   _, err = redisClient.Cmd("ZADD", keyPrefix+":"+currHour, 1, member).Int()
-		     	   redisErrHandler(err, "[ZADD "+keyPrefix+":"+currHour+" 1 "+member+"]")
+		     	   redisErrHandler(err, "["+tools.DateStampAsString()+"] [ZADD "+keyPrefix+":"+currHour+" 1 "+member+"]")
 		   	}
 		   }
 
 
 		   // ************  Now create the stats related to Device user agents *******************		
 		   deviceDetails := tools.GetUserAgentDetails(req.Header.Get("User-Agent"))
-		   //fmt.Println(deviceDetails)
+		   if DEBUG { fmt.Println("[" + tools.DateStampAsString() + "]", deviceDetails) }
  
-		   if DEBUG { fmt.Println("Redis Operation [ZINCRBY device_stats:platform:"+tools.YmdToString() + " 1 " + deviceDetails["platform"] + "]")  }
+		   if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY device_stats:platform:"+tools.YmdToString() + " 1 " + deviceDetails["platform"] + "]")  }
                    redisClient.Append("ZINCRBY", "device_stats:platform:"+tools.YmdToString(), 1, deviceDetails["platform"])
 		   
-		   if DEBUG { fmt.Println("Redis Operation [ZINCRBY device_stats:os_version:"+tools.YmdToString() + " 1 " + deviceDetails["platform"]+" - "+deviceDetails["os_version"]+"]")  }
+		   if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY device_stats:os_version:"+tools.YmdToString() + " 1 " + deviceDetails["platform"]+" - "+deviceDetails["os_version"]+"]")  }
                    redisClient.Append("ZINCRBY", "device_stats:os_version:"+tools.YmdToString(), 1, deviceDetails["platform"]+" - "+deviceDetails["os_version"])
 		   
-		   if DEBUG { fmt.Println("Redis Operation [ZINCRBY device_stats:rendering_engine:"+tools.YmdToString() + " 1 " + deviceDetails["rendering_engine"]+"]")  }
+		   if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY device_stats:rendering_engine:"+tools.YmdToString() + " 1 " + deviceDetails["rendering_engine"]+"]")  }
                    redisClient.Append("ZINCRBY", "device_stats:rendering_engine:"+tools.YmdToString(), 1, deviceDetails["rendering_engine"])
 
-		   if DEBUG { fmt.Println("Redis Operation [ZINCRBY device_stats:browser:"+tools.YmdToString() + " 1 " + deviceDetails["browser"]+"]")  }
+		   if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY device_stats:browser:"+tools.YmdToString() + " 1 " + deviceDetails["browser"]+"]")  }
                    redisClient.Append("ZINCRBY", "device_stats:browser:"+tools.YmdToString(), 1, deviceDetails["browser"])
 
-		   
-
-
-		   		   
+		   redisClient.GetReply()		   		   		   
 
 		} // END of "redisClient != nil" condition
 
@@ -376,51 +394,18 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 	// Finally, return the tracking pixel and exit the request.
 	res.Header().Set("Cache-control", "public, max-age=0")
-	res.Header().Set("Content-Type", "image/png")
-	png.Encode(res, pngPixel)
+	res.Header().Set("Content-Type", "image/png")	
+	output,_ := base64.StdEncoding.DecodeString(PNGPX_B64)
+	io.WriteString(res, string(output))
+
 	return
 
 }
 
 
-/*  WORK IN PROGRESS....
-func (sh *StatsDeviceHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
-
-     if req.URL.Path != "/statsdevices" {
-          res.WriteHeader(http.StatusNotFound)
-          res.Header().Set("Cache-control", "public, max-age=0")
-          res.Header().Set("Content-Type", "text/html")
-          fmt.Fprintf(res, "Invalid path")
-          return
-      }
-     
-     / Get the list of all keys to fetch
-      resList,_ := redisClient.Cmd("keys", "country_hits*").List()
-
-      resKeys2, _ := redisClient.Cmd("KEYS", "device_stats:" + strconv.Itoa(y) + strconv.Itoa(int(m)) + strconv.Itoa((d-1)) + ":*").List()
-      dataToDump,_ = json.Marshal(getDeviceStats(resKeys2))
-
-
-
-     // Initalize the array with 24 indexes and for each key in the restList, populate the map
-     data1,err1 := json.Marshal(getDeviceStats(resList))
-     res.Header().Set("Cache-control", "public, max-age=0")
-     res.Header().Set("Content-Type", "application/json")
-     if err1 == nil {
-          fmt.Fprintf(res, string(data1))
-     } else {
-       fmt.Fprintf(res, "{\"status\": \"error\"}")
-     }
-     return
-
-
-}
-*/
-
-
 func (sh *StatsHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
          
-      if req.URL.Path != "/stats" {
+      if req.URL.Path != "/stats" && req.URL.Path != "/statsdevices" {
       	  res.WriteHeader(http.StatusNotFound)
 	  res.Header().Set("Cache-control", "public, max-age=0")
      	  res.Header().Set("Content-Type", "text/html")          
@@ -428,23 +413,56 @@ func (sh *StatsHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
       	  return 
       }
 
-      // Get the list of all keys to fetch
-      resList1,_ := redisClient.Cmd("keys", "country_hits*").List()
-      resList2,_ := redisClient.Cmd("keys", "continent_hits*").List()
-      resList := tools.JoinLists(resList1,resList2)
+
+      if req.URL.Path == "/stats" {
+
+            // Get the list of all keys to fetch
+	    if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis CMD: KEYS country_hits*") }
+	    if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis CMD: KEYS continent_hits*") }
+      	    resList1,_ := redisClient.Cmd("keys", "country_hits*").List()	   
+	    resList2,_ := redisClient.Cmd("keys", "continent_hits*").List()
+	    resList := tools.JoinLists(resList1,resList2)
+	    
+     	    // Initalize the array with 24 indexes and for each key in the restList, populate the map
+     	    data1,err1 := json.Marshal(getGeoLocationStats(resList))
+     	    res.Header().Set("Cache-control", "public, max-age=0")
+     	    res.Header().Set("Content-Type", "application/json")
+     	    if err1 == nil {
+               fmt.Fprintf(res, string(data1))
+     	    } else {
+       	      fmt.Fprintf(res, "{\"status\": \"error\"}")
+     	    }
+
+	} else if req.URL.Path == "/statsdevices" {
+
+	     /*
+	     t := time.Now()
+     	     y,m,d := t.Date()	    
+	     month := ""
+	     if int(m) < 10 {
+	     	     month = "0"+strconv.Itoa(int(m))
+ 	     } else {
+	       	    month = strconv.Itoa(int(m))
+	     }
+	    
+	     if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis CMD: KEYS device_stats:*:" + strconv.Itoa(y) + month + strconv.Itoa((d-1)) ) }
+     	     resKeys, _ := redisClient.Cmd("KEYS", "device_stats:*:" + strconv.Itoa(y) + month + strconv.Itoa((d-1)) ).List()
+	     */
+
+	     
+     	     data,err := json.Marshal(getDeviceStats())
+     	     res.Header().Set("Cache-control", "public, max-age=0")
+     	     res.Header().Set("Content-Type", "application/json")
+     	    if err == nil {
+               fmt.Fprintf(res, string(data))
+	    } else {
+               fmt.Fprintf(res, "{\"status\": \"error\"}")
+       	    }
+
+	}
 
 
-     // Initalize the array with 24 indexes and for each key in the restList, populate the map
-     data1,err1 := json.Marshal(getGeoLocationStats(resList))
-     res.Header().Set("Cache-control", "public, max-age=0")
-     res.Header().Set("Content-Type", "application/json")
-     if err1 == nil {
-          fmt.Fprintf(res, string(data1))
-     } else {
-       fmt.Fprintf(res, "{\"status\": \"error\"}")
-     }
-     return
-
+	return
 }
 
 
@@ -458,7 +476,6 @@ func redisErrHandler(err error, stamp string) {
 
 func loadConfig(filePath string) map[string]string{
      
-     fmt.Println("Running "+filePath+" through tools.ParseConfigFile....")
      params := tools.ParseConfigFile(filePath)
 
      /*
@@ -468,15 +485,15 @@ func loadConfig(filePath string) map[string]string{
 
      _,ok := params["log_base_dir"] 
      if ok != true {
-     	fmt.Println("Config Error: log directory not specified!\n")
+     	fmt.Println("["+tools.DateStampAsString()+"] Config Error: log directory not specified!\n")
         os.Exit(0)
      } else {
-       state.Config["logBaseDir"] = params["log_base_dir"]       
+       state.Config["logBaseDir"] = strings.TrimRight(params["log_base_dir"], "/") + "/"
      }     	 
 
      _,ok = params["server_ip"]
      if ok != true {
-        fmt.Println("Config Error: server IP not specified!\n")
+        fmt.Println("["+tools.DateStampAsString()+"] Config Error: server IP not specified!\n")
         os.Exit(0)
      } else {
        state.Config["ip"] = params["server_ip"]
@@ -484,7 +501,7 @@ func loadConfig(filePath string) map[string]string{
 
      _,ok = params["server_port"]
      if ok != true {
-        fmt.Println("Config Error: server port not specified!\n")
+        fmt.Println("["+tools.DateStampAsString()+"] Config Error: server port not specified!\n")
         os.Exit(0)
      } else {
        state.Config["port"] = params["server_port"]
@@ -535,40 +552,44 @@ func loadConfig(filePath string) map[string]string{
      	}
      }
 
-     return params
+    
+    return params
 }
 
 
 func main() {
 
+     	if len(os.Args) == 2 && os.Args[1] == "-version" {
+           fmt.Println("GoLog - Version "+getVersion()+"\n")
+           os.Exit(0)
+     	}
+
+
 	var logBaseDir, ip, cDomain, config, reportingIp, flushRedisDb string
 	var buffLines, port, redisDb, reportingActive, reportingPort int
 	
 	flag.StringVar(&logBaseDir, "d", "/var/log/golog/", "Base directory where log files will be written to")
-	flag.StringVar(&ip, "i", "", "IP to listen on")
+	flag.StringVar(&ip, "i", "0.0.0.0", "IP to listen on")
 	flag.IntVar(&port, "p", 80, "Port number to listen on")
 	flag.IntVar(&buffLines, "b", 25, "Number of lines to buffer before dumping to log file")
 	flag.IntVar(&redisDb, "db", 2, "Index of redis DB to use")
 	flag.StringVar(&flushRedisDb, "flushredis", "0", "Option to flush redis db on startup")
 	flag.StringVar(&cDomain, "domain", "", "Domain on which to set the udid cookie on.")
-
 	flag.IntVar(&reportingActive, "stats", 0, "Enable status reporting on [IP]:[PORT]")
-	flag.StringVar(&reportingIp, "ri", "", "IP to listen on for status reporting")
-        flag.IntVar(&reportingPort, "rp", 80, "Port number to listen on for status reporting")
-	
+	flag.StringVar(&reportingIp, "ri", "0.0.0.0", "IP to listen on for status reporting")
+        flag.IntVar(&reportingPort, "rp", 80, "Port number to listen on for status reporting")	
 	flag.StringVar(&config, "conf", "", "Config file to be used")
+
 	flag.Parse()
 
 
-	/*
-		If a config file is specified and exists, then parse it and use it,
-		otherwise just use the command-line flag values
+	/*  If a config file is specified and exists, then parse it and use it,
+	    otherwise just use the command-line flag values
 	*/
 
-
 	if config != "" {
-	    fmt.Println("Loading config file....")
-	    state.Config = loadConfig(config)			
+	    fmt.Println("["+tools.DateStampAsString()+"] Loading config file....")
+	    loadConfig(config)			
 	} else {
 
 	  state.MaxBuffLines = buffLines
@@ -598,9 +619,9 @@ func main() {
 	// Ensure the GeoIP DB is available
 	if tools.FileExists(geoip_db_city) == false {
 		if tools.Download(geoip_db_base + geoip_db_city + ".gz") {
-			fmt.Println("Download of " + geoip_db_city + " successful")
+			fmt.Println("["+tools.DateStampAsString()+"] Download of " + geoip_db_city + " successful")
 		} else {
-			fmt.Println("Could not download " + geoip_db_city)
+			fmt.Println("["+tools.DateStampAsString()+"] Could not download " + geoip_db_city)
 		}
 	}
 
@@ -612,8 +633,8 @@ func main() {
 			err = os.Mkdir(logBaseDir, 0755)
 		}
 		if err != nil {
-			fmt.Println("Could not created directory: ", logBaseDir)
-			fmt.Println("Please run process as authorized user!\n")
+			fmt.Println("["+tools.DateStampAsString()+"] Could not created directory: ", logBaseDir)
+			fmt.Println("["+tools.DateStampAsString()+"] Please run process as authorized user!\n")
 			os.Exit(0)
 		}
 	}
@@ -627,7 +648,7 @@ func main() {
 
 	// Finally, load the redis instance
 	c, redisErr := redis.DialTimeout("tcp", "127.0.0.1:6379", time.Duration(2)*time.Second)
-	redisErrHandler(redisErr, "[1 - tcp connect]")
+	redisErrHandler(redisErr, "["+tools.DateStampAsString()+"] 1 - tcp connect")
 	redisClient = c
 
  	// select database and flush it
@@ -641,21 +662,19 @@ func main() {
 
 	// Now set a simple object with a TTL of tomorrow at 00:00:00 so that any stats will get reset
 	_, redisErr = redisClient.Cmd("set", "golog_stats_available", 1).Str()
-	redisErrHandler(redisErr, "[4 - set golog_stats_available]")
+	redisErrHandler(redisErr, "["+tools.DateStampAsString()+"] 4 - set golog_stats_available")
 
 	if redisErr == nil {
 	   t := time.Now()
            y,m,d := t.Date()
            expiryTime := time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
 	   _, redisErr = redisClient.Cmd("expireat", "golog_stats_available", int(expiryTime.Unix())).Int()
-	   redisErrHandler(redisErr, "[5 - expireat golog_stats_available]")
+	   redisErrHandler(redisErr, "["+tools.DateStampAsString()+"] 5 - expireat golog_stats_available")
 	}
 
 	defer redisClient.Close()
 
 	wg := &sync.WaitGroup{}
-
-	//http.HandleFunc("/stats", statsHandler)
 
 	// Finally start the reporting server if it's been enabled
 	if state.Config["reportingActive"] == "1" {
@@ -670,18 +689,7 @@ func main() {
              	      os.Exit(0)
            	   }
 	   }()
-	   /*
-	   wg.Add(1)
-           go func() {           
-                   err := http.ListenAndServe(state.Config["reportingIp"]+":"+state.Config["reportingPort"], &StatsDeviceHandler{})
-                   wg.Done()
-                   if err != nil {
-                      fmt.Println("GoLog Error:", err)
-                      os.Exit(0)
-                   }
-           }()
-	   */
-           fmt.Println("Reporting server started on "+state.Config["reportingIp"]+":"+state.Config["reportingPort"])
+           fmt.Println("["+tools.DateStampAsString()+"] Reporting server started on "+state.Config["reportingIp"]+":"+state.Config["reportingPort"])
 
 	}
 
@@ -696,7 +704,22 @@ func main() {
 	   wg.Done()
 	}()
 
-	fmt.Println("Logging server started on "+state.Config["ip"]+":"+state.Config["port"])
+	fmt.Println("["+tools.DateStampAsString()+"] Logging server started on "+state.Config["ip"]+":"+state.Config["port"])
+
+
+	// Enable conection status PINGing to see if redis connection still alive
+           go func() {
+	      for {
+	      	status, _ := redisClient.Cmd("PING").Str()
+		if status == "PONG" && DEBUG {
+	      	   fmt.Println("["+tools.DateStampAsString()+"] Redis Connection Status: OK")
+		} else if DEBUG {
+		   fmt.Println("["+tools.DateStampAsString()+"] Redis Connection Status: ERROR - "+status)
+		}
+		time.Sleep(15 * time.Minute)
+	      }
+	   }()	   
+
 
 	wg.Wait()
 
