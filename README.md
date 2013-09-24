@@ -25,13 +25,17 @@ or with compiled binary:
 Parameter details:
 --------------------
 
+`-version` : Simply prints the current version and exits <br/>
 `-i` : The IP to start the logging server on (default = 0.0.0.0)<br/>
 `-p` : The port on which to listen (default = 80)<br/>
 `-b` : The number of lines to store in the buffer before writing to disk (default = 25)<br/>
 `-db` : The index number of the redis DB to use (default = 2)<br/>
+`-flushredis` : Setting value to 1 will flush the selected redis DB on startup (default = 0)
 `-d` : The directory in which the logfiles are to be stored (default = /var/log/golog/)<br/>
 `-domain` : The domain for which to set the UDID cookie on<br/>
-
+`-stats` : Option that specifies if the server will report stats via HTTP (default = 0) <br/>
+`-ri` : The IP on which the reporting server will listen <br/>
+`-rp` : The port on which the reporting server will listen <br/>
 
 
 HTTP URL Format:
