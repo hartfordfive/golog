@@ -120,6 +120,7 @@ func ParseConfigFile(filePath string) map[string]string{
 	    "server_port": "",
 	    "num_buff_lines": "",
 	    "redis_db_index": "",
+	    "flush_redis_db": "",
 	    "cookie_domain": "",
 	    "reporting_server_active": "",
 	    "reporting_server_ip": "",
@@ -140,7 +141,6 @@ func ParseConfigFile(filePath string) map[string]string{
          }
      }
 
-     fmt.Println("DEBUG:",params)
      return params
 }
 
