@@ -168,7 +168,7 @@ func getDeviceStats() map[string]map[string]int{
 func getRedisConnection() *redis.Client{
 
      // Finally, load the redis instance
-     rc, redisErr := redis.DialTimeout("tcp", state.Config["redisIp"]":"+state.Config["redisPort"], time.Duration(2)*time.Second)
+     rc, redisErr := redis.DialTimeout("tcp", state.Config["redisIp"]+":"+state.Config["redisPort"], time.Duration(2)*time.Second)
      redisErrHandler(redisErr, "["+tools.DateStampAsString()+"] 1 - tcp connect")
      // Select the desired DB
      r := rc.Cmd("select", state.Config["redisDb"])
@@ -560,7 +560,7 @@ func loadConfig(filePath string) map[string]string{
 
      _,ok = params["redis_port"]
      if ok != true {
-        state.Config["redisPort"] = "6739"
+        state.Config["redisPort"] = "6379"
      } else {
        state.Config["redisPort"] = params["redis_port"]
      }
