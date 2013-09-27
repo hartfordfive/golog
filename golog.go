@@ -30,7 +30,7 @@ const (
 	DEBUG	      bool   = true
 	VERSION_MAJOR  int    = 0
 	VERSION_MINOR  int    = 1
-	VERSION_PATCH  int    = 0
+	VERSION_PATCH  int    = 1
 	VERSION_SUFFIX string = "beta"
 )
 
@@ -264,7 +264,8 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
                         }
 
 
-        		 _ = writeToFile(state.Config["logBaseDir"] + "_daily_geo_stats-" + strconv.Itoa(y) + "-" + strconv.Itoa(int(m)) + "-" + strconv.Itoa(d)+".json", string(dataToDump))
+			dateStr, _ := redisClient.Cmd("get", "next_dumpfile_date").Str()
+        		 _ = writeToFile(state.Config["logBaseDir"] + "_daily_geo_stats-" + dateStr +".json", string(dataToDump))
 
 			 // Now dump the device stats		
 			  if DEBUG {
@@ -272,7 +273,7 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
                         }
 
                          dataToDump,_ = json.Marshal(getDeviceStats())
-			 _ = writeToFile(state.Config["logBaseDir"] + "_daily_device_stats-" + strconv.Itoa(y) + "-" + strconv.Itoa(int(m)) + "-" + strconv.Itoa(d) + ".json", string(dataToDump))
+			 _ = writeToFile(state.Config["logBaseDir"] + "_daily_device_stats-" + dateStr + ".json", string(dataToDump))
 			 
 
 			 // Now delete all keys in hashed set and			
@@ -282,6 +283,7 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 			     redisClient.Append("ZREMRANGEBYRANK", resKeys[i], 0, -1)
 			 }
 			 redisClient.Append("SET", "golog_stats_available", 1)
+			 redisClient.Append("SET", "next_dumpfile_date", tools.YmdToString())
 			 redisClient.Append("EXPIREAT", "golog_stats_available", expiryTime.Unix())			 
 			 redisClient.GetReply()		
 
@@ -300,24 +302,9 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 			}  else {
 			   member = countryCode
 			}
-
-			/*
-		   	if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZSCORE  "+keyPrefix+":"+currHour+" "+member+"]") }
-		   	redisRes,err := redisClient.Cmd("ZSCORE", keyPrefix+":"+currHour, member).Int()
-		   	redisErrHandler(err, "[ZSCORE  "+keyPrefix+":"+currHour+" "+member+"]")
-			*/
 					   
-		   	//if string(redisRes) != "<nil>" {
-		      	   if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY "+keyPrefix+":"+currHour+" 1 "+member+"]") }
-		      	   redisClient.Append("ZINCRBY", keyPrefix+":"+currHour , 1, member)
-		      	   //redisErrHandler(err, "["+tools.DateStampAsString()+"] [ZINCRBY "+keyPrefix+":"+currHour+" 1 "+member+"]")
-		   	/*
-			} else {		     	
-			   if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZADD "+keyPrefix+":"+currHour+" 1 "+member+"]")  }
-		     	   _, err = redisClient.Cmd("ZADD", keyPrefix+":"+currHour, 1, member).Int()
-		     	   redisErrHandler(err, "["+tools.DateStampAsString()+"] [ZADD "+keyPrefix+":"+currHour+" 1 "+member+"]")
-		   	}
-			*/
+		      	if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY "+keyPrefix+":"+currHour+" 1 "+member+"]") }
+		      	redisClient.Append("ZINCRBY", keyPrefix+":"+currHour , 1, member)		      	
 		   }
 
 
@@ -713,25 +700,10 @@ func main() {
 
 
 	// Finally, load the redis instance
-	/*
-	c, redisErr := redis.DialTimeout("tcp", "127.0.0.1:6379", time.Duration(2)*time.Second)
-	redisErrHandler(redisErr, "["+tools.DateStampAsString()+"] 1 - tcp connect")
-	redisClient = c
-	*/
-
- 	// select database and flush it
-	/*
-        r := redisClient.Cmd("select", redisDb)
-        redisErrHandler(r.Err, "[2 - select]")
-	if state.Config["flushRedisDb"] == "1" {
-           r = redisClient.Cmd("flushdb")
-           redisErrHandler(r.Err, "[3 - flushdb]")
-	}
-	*/
-
 	redisClient = getRedisConnection()
 
 	if state.Config["flushDb"] == "1" {
+	   if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Flushing Redis DB...") }	   
            redisClient.Append("flushdb")
         }
 
@@ -741,14 +713,14 @@ func main() {
         y,m,d := t.Date()
         expiryTime := time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
 	redisClient.Append("expireat", "golog_stats_available", int(expiryTime.Unix()))	
+	redisClient.Append("set", "next_dumpfile_date", tools.YmdToString())
 	redisClient.GetReply()
 
 	// Now close the connection
 	redisClient.Close()
 	redisClient = nil
 	
-	//defer redisClient.Close()
-
+	
 	wg := &sync.WaitGroup{}
 
 	// Finally start the reporting server if it's been enabled
@@ -756,7 +728,6 @@ func main() {
 	   // Start the second process in a seperate go thread so that it can respond and listen only to relevant requests
 	   wg.Add(1)
 	   go func() {
-	   	   //http.HandleFunc("/stats", statsHandler)
            	   err := http.ListenAndServe(state.Config["reportingIp"]+":"+state.Config["reportingPort"], &StatsHandler{})
 		   wg.Done()
 		   if err != nil {
@@ -780,22 +751,6 @@ func main() {
 	}()
 
 	fmt.Println("["+tools.DateStampAsString()+"] Logging server started on "+state.Config["ip"]+":"+state.Config["port"])
-
-
-	// Enable conection status PINGing to see if redis connection still alive
-	/*
-           go func() {
-	      for {
-	      	status, _ := redisClient.Cmd("PING").Str()
-		if status == "PONG" && DEBUG {
-	      	   fmt.Println("["+tools.DateStampAsString()+"] Redis Connection Status: OK")
-		} else if DEBUG {
-		   fmt.Println("["+tools.DateStampAsString()+"] Redis Connection Status: ERROR - "+status)
-		}
-		time.Sleep(15 * time.Minute)
-	      }
-	   }()	   
-	*/
 
 	wg.Wait()
 
