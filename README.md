@@ -7,6 +7,7 @@ A simple self contained web server process that logs data from incoming HTTP req
 Dependencies:
 --------------------
 Redis Server
+MaxMind C development library libgeoip-dev
 Go Redis Client (github.com/fzzy/radix - at least from commit 7059bc0191 or newer)<br/>
 Go GeoIP Client (github.com/abh/geoip - at least from commit 6fd87ec2cc or newer)<br/>
 MaxMind GeoIP Legacy DBs  (http://geolite.maxmind.com/download/geoip/database/)<br/>

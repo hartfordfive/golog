@@ -399,9 +399,12 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 	
 	if bl,_ := strconv.Atoi(state.Config["buffLines"]); state.BuffLineCount >= bl {
 
+	   	if DEBUG { fmt.Println("Writting buffer to disk. ("+ strconv.Itoa(bl) +" lines total)" ) }
+
 		if getLogfileName() != state.CurrLogFileName {
-			fh, _ := os.Create(strings.TrimRight(state.LogBaseDir, "/") + "/" + getLogfileName())
-			state.CurrLogFileName = getLogfileName()
+		        if DEBUG { fmt.Println("\t Updated Filename:", strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName()) }
+			fh, _ := os.Create(strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName())
+			state.CurrLogFileName = strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName()
 			state.CurrLogFileHandle = fh
 			defer state.CurrLogFileHandle.Close()
 		}
@@ -412,6 +415,7 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 			totalBytes += nb
 		}
 		state.CurrLogFileHandle.Sync()
+		if DEBUG { fmt.Println("\t Wrote to:", state.CurrLogFileName) }
 		// Empty the buffer and reset the buff line count to 0
 		state.BuffLineCount = 0
 		state.BuffLines = []string{}
@@ -672,6 +676,9 @@ func main() {
  
 	}
 
+	if DEBUG { fmt.Println("Config:", state.Config) }
+
+
 	// Load the transparent PNG pixel into memory once
 	loadOnce.Do(loadPNG)
 
@@ -698,8 +705,8 @@ func main() {
 		}
 	}
 
-	fh, _ := os.Create(strings.TrimRight(logBaseDir, "/") + "/" + getLogfileName())
-	state.CurrLogFileName = getLogfileName()
+	fh, _ := os.Create(strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName())
+	state.CurrLogFileName = strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName()
 	state.CurrLogFileHandle = fh
 
 	defer state.CurrLogFileHandle.Close()
