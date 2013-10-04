@@ -8,7 +8,7 @@ Dependencies:
 --------------------
 Redis Server<br/>
 MaxMind C development library libgeoip-dev<br/>
-Go Redis Client (github.com/fzzy/radix - at least from commit 7059bc0191 or newer)<br/>
+Go Redis Client (github.com/fzzy/radix - v0.3.4)<br/>
 Go GeoIP Client (github.com/abh/geoip - at least from commit 6fd87ec2cc or newer)<br/>
 MaxMind GeoIP Legacy DBs  (http://geolite.maxmind.com/download/geoip/database/)<br/>
 
