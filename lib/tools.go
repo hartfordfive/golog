@@ -168,17 +168,38 @@ func GetUserAgentDetails(ua string) map[string]string{
      //ua = strings.ToLower(ua);
 
      //matches = regexp.MustCompile(`(?i)(Windows NT\s+[0-9]\.[0-9]|Android|iOS|FirefoxOS|Windows\s*Phone OS [0-9]\.[0-9]|BlackBerry [0-9]{4,4}|BB10)`).FindStringSubmatch(ua)
-     matches := regexp.MustCompile(`(?i)(Windows NT|Android|iOS|Firefox|Windows\s*Phone OS|BlackBerry|BB10|iphone os|ipad|ipod|Macintosh)`).FindStringSubmatch(ua)
+     matches := regexp.MustCompile(`(?i)(Windows NT|Android|iOS|Firefox|Windows\s*Phone OS|BlackBerry|BB10|iphone os|ipad|ipod|Macintosh|SymbianOS|Series60)`).FindStringSubmatch(ua)
 
      deviceData := map[string]string{}
+
+     if len(matches) >= 2 {
 
      switch strings.ToLower(matches[1]) {
 
      	    case "windows nt":
-	    	 deviceData["platform"] = "Windows NT"
+
 		 matches = regexp.MustCompile(`(?i)Windows NT\s+([0-9]+\.[0-9]+)`).FindStringSubmatch(ua)		
 		 if len(matches) >= 2 {
-		    deviceData["os_version"] = matches[1]	    	 
+		    deviceData["platform"] = "Windows"
+		 }
+
+		 if matches[1] == "5.1" || matches[1] == "5.2" {
+                    deviceData["os_version"] = "XP"
+                 } else if matches[1] == "6.0" {
+                    deviceData["os_version"] = "Vista"
+                 } else if matches[1] == "6.1" {
+		    deviceData["os_version"] = "7"
+		 } else if matches[1] == "6.2" {
+		    deviceData["os_version"] = "8"
+		 } else if matches[1] == "6.3" {
+                    deviceData["os_version"] = "8.1"
+                 } 
+
+		 matches = regexp.MustCompile(`(?i)(ARM|Touch|Tablet)`).FindStringSubmatch(ua)		 		 
+		 if len(matches) >= 2 {
+		    deviceData["ua_type"] = "Mobile"
+		 } else {
+		   deviceData["ua_type"] = "Desktop"
 		 }
            
             case "windows phone":
@@ -187,13 +208,14 @@ func GetUserAgentDetails(ua string) map[string]string{
 		 if len(matches) >= 2 {
                     deviceData["os_version"] = matches[1]
 		 }
-
+		 
 		 matches = regexp.MustCompile(`(?i)IEMobile\/([0-9]+\.[0-9]+);`).FindStringSubmatch(ua)
 		 if len(matches) >= 2 {
 		    deviceData["rendering_engine"] = "Trident"
 		    deviceData["browser"] = "Internet Explorer Mobile"
 		    deviceData["browser_version"] = matches[1]
 		 }
+		 deviceData["ua_type"] = "Mobile"
 
 	    case "android":
 	    	 deviceData["platform"] = "Android"
@@ -201,9 +223,9 @@ func GetUserAgentDetails(ua string) map[string]string{
 		 if len(matches) >= 3 {
 		    deviceData["os_version"] = matches[1]
 		 }
+		 deviceData["ua_type"] = "Mobile"
 
-		 matches = regexp.MustCompile(`(?i)(Chrome|Firefox|UCWeb|Maxthon|Opera Mini|Opera|Skyfire)`).FindStringSubmatch(ua)
-		 fmt.Println("Browser matches:",matches)
+		 matches = regexp.MustCompile(`(?i)(Chrome|Firefox|UCWeb|Maxthon|Opera Mini|Opera|Skyfire|Netfront)`).FindStringSubmatch(ua)
 		 if len(matches) >= 1 {
 		    deviceData["browser"] = matches[1]
 		 }
@@ -214,7 +236,8 @@ func GetUserAgentDetails(ua string) map[string]string{
 		 if len(matches) >= 2 {
                     deviceData["os_version"] = strings.Replace(matches[1], "_", ".", -1)
 		 }
-
+		 deviceData["manufacturer"] = "Apple"
+		 deviceData["ua_type"] = "Mobile"
 
   	    case "macintosh":
                  deviceData["platform"] = "Mac OSX"
@@ -228,6 +251,7 @@ func GetUserAgentDetails(ua string) map[string]string{
                  if len(matches) >= 2 {
     		    deviceData["os_version"] = strings.Replace(matches[1], "_", ".", -1)
                  }
+		 deviceData["ua_type"] = "Desktop"
 
             case "firefox":
 	    	 // Should match:  mozilla/5.0 (mobile; rv:18.0) gecko/18.0 firefox/18.0
@@ -237,11 +261,13 @@ func GetUserAgentDetails(ua string) map[string]string{
 		    if matches[1] == "mobile" {
                        deviceData["platform"] = "FirefoxOS"
 		       deviceData["os_version"] = matches[2]
+		       deviceData["ua_type"] = "Mobile"
 		    }
                  }
 		 
             case "blackberry", "bb10":
                  deviceData["platform"] = "BlackBerry"
+		 deviceData["manufacturer"] = "RIM"
                  matches = regexp.MustCompile(`(?i)(Version/([0-9]+\.[0-9]+(\.[0-9]+)*))`).FindStringSubmatch(ua)
 		 if len(matches) >= 2 {
                     deviceData["os_version"] = matches[2]
@@ -251,9 +277,39 @@ func GetUserAgentDetails(ua string) map[string]string{
                     deviceData["model"] = matches[1]
 		    deviceData["rendering_engine"] = "Mango"
                  }
+		 deviceData["ua_type"] = "Mobile"
+
+
+	    case "symbianos","series60":
+ 	         deviceData["platform"] = "SymbianOS"
+		 deviceData["manufacturer"] = "Nokia"		 
+                 matches = regexp.MustCompile(`(?i)(Series60|SymbianOS)\/([0-9]+\.[0-9]+)`).FindStringSubmatch(ua)
+                 if len(matches) >= 3 {
+                    deviceData["os_version"] = matches[2]
+                 }
+		 deviceData["ua_type"] = "Mobile"
+
+
+     } // End switch statement
+
+     } // End outer regex if
+
+
+     // Try to determine the device manufacturer
+     _,ok := deviceData["manufacturer"] 
+     if !ok {
+     	  matches = regexp.MustCompile(`(?i)(Acer|Archos|benQ| SIE|GeeksPhone|HTC|Huawei|INQ|Kyocera|Lenovo| LG|Meizu|NEC|Nokia|Palm|Pantech|Samsung|Sanyo|Sharp|ZTE)`).FindStringSubmatch(ua)
+	  if len(matches) >= 2 {
+             deviceData["manufacturer"] = strings.Trim(matches[1], " ")
+	     _,ok := deviceData["ua_type"] 
+	     if !ok {
+	     	deviceData["ua_type"] = "Mobile"
+             }
+          }    
      }
 
-     _,ok := deviceData["rendering_engine"]
+     // Try one final attempt to detect the rendering engine
+     _,ok = deviceData["rendering_engine"]
      if strings.Contains(strings.ToLower(ua), "webkit") && !ok {
      	deviceData["rendering_engine"] = "WebKit"
      } else if strings.Contains(strings.ToLower(ua), "gecko") && !ok {
@@ -268,11 +324,19 @@ func GetUserAgentDetails(ua string) map[string]string{
         deviceData["rendering_engine"] = "Obigo"
      }
 
+
+     // Try one final attempt to detect the browser name
      _,ok = deviceData["browser"]
+
      if deviceData["platform"] == "iOS" && strings.Contains(strings.ToLower(ua), "safari") && !ok {
         deviceData["browser"] = "Safari Mobile"
      } else if strings.Contains(strings.ToLower(ua), "MSIE") && !ok {
        	deviceData["browser"] = "Internet Explorer"
+     } else if !ok {
+       	matches = regexp.MustCompile(`(?i)(Opera Mini|Opera|Skyfire|Chrome|Bolt|Blazer|Series60|UCBrowser)`).FindStringSubmatch(ua)
+        if len(matches) >= 2 {
+           deviceData["browser"] = matches[1]
+        } 
      }
 
 
@@ -292,7 +356,14 @@ func GetUserAgentDetails(ua string) map[string]string{
      if _,ok := deviceData["browser"]; !ok {
           deviceData["browser"] = "Unknown"
      }
+     if _,ok := deviceData["manufacturer"]; !ok {
+          deviceData["manufacturer"] = "Unknown"
+     }
+     if _,ok := deviceData["ua_type"]; !ok {
+          deviceData["ua_type"] = "Desktop"
+     }
 
+     
 
      return deviceData
 
@@ -302,7 +373,7 @@ func GetUserAgentDetails(ua string) map[string]string{
 func YmdToString() string {
      t := time.Now()
      y,m,d := t.Date()
-     return strconv.Itoa(y)+fmt.Sprintf("%02d", m)+strconv.Itoa(d)
+     return strconv.Itoa(y)+fmt.Sprintf("%02d", m)+fmt.Sprintf("%02d",d)
 }
 
 func DateStampAsString() string{

@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"encoding/base64"
 	"io"
+	"crypto/md5"
 )
 
 // Struct that contains the runtime properties including the buffered bytes to be written
@@ -28,6 +29,7 @@ const (
 	geoip_db      string = "GeoIP.dat"
 	geoip_db_city string = "GeoLiteCity.dat"
 	DEBUG	      bool   = true
+	AVG_VISIT_LENGTH     int = 2 // Avg. visit length in minutes
 	VERSION_MAJOR  int    = 0
 	VERSION_MINOR  int    = 1
 	VERSION_PATCH  int    = 1
@@ -68,16 +70,16 @@ func loadPNG(){
      pngPixel,_ = base64.StdEncoding.DecodeString(PNGPX_B64)
 }
 
-func getInfo(ip string) (string, string, string, string) {
+func getInfo(ip string) (string, string, string, string, float32, float32) {
 
 	matches := regexp.MustCompile(`([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)`).FindStringSubmatch(ip)
 	if len(matches) >= 1 && geo != nil {
 		record := geo.GetRecord(ip)
 		if record != nil {
-			return record.ContinentCode, record.CountryCode, record.CountryName, record.City
+			return record.ContinentCode, record.CountryCode, record.CountryName, record.City, record.Latitude, record.Longitude
 		}
 	}
-	return "", "", "", ""
+	return "", "", "", "", 0.0, 0.0
 }
 
 func loadGeoIpDb(dbName string) *geoip.GeoIP {
@@ -139,6 +141,8 @@ func getDeviceStats() map[string]map[string]int{
                 "browser": map[string]int{},
 		"rendering_engine": map[string]int{},
 		"model": map[string]int{},
+		"manufacturer": map[string]int{},
+		"ua_type": map[string]int{},
      }
 
 
@@ -161,6 +165,99 @@ func getDeviceStats() map[string]map[string]int{
      }
 
      return returnData
+
+}
+
+func getLiveSiteTraffic(domain string) map[string]int{
+
+     pageVisits := map[string]int{}
+
+     redisClient := getRedisConnection()
+     hrsMins := fmt.Sprintf("%02d", time.Now().Hour())
+     hrsMins += fmt.Sprintf("%02d", time.Now().Minute())
+
+     // Get all the keys actively visited pages this current minute
+     if DEBUG { fmt.Println( "["+tools.DateStampAsString()+"] KEYS page_visitors:"+domain+":"+hrsMins+":*") }
+     keys,_ := redisClient.Cmd("KEYS", "page_visitors:"+domain+":"+hrsMins+":*").List()
+
+     for _,v := range keys {
+     	 if DEBUG { fmt.Println("[" + tools.DateStampAsString() + "] SCARD "+ v) }
+     	 redisClient.Append("SCARD", v)
+     }
+
+     for i := 0; i < len(keys); i++ {
+     	 r := redisClient.GetReply()
+	 val,_ := r.Int()
+	 parts := strings.Split(keys[i], ":")
+	 pageVisits[parts[3]] = val
+     }
+
+     if DEBUG { fmt.Println("[" + tools.DateStampAsString() + "] Redis Set:", pageVisits) }
+
+     redisClient.Close()
+     return pageVisits     
+
+}
+
+
+func getLiveSiteGeoTraffic(continentCode string, countryCode string) map[string]map[string][]string{
+
+     geoVisits := map[string]map[string][]string{}
+
+
+     redisClient := getRedisConnection()
+
+     hrsMins := fmt.Sprintf("%02d", time.Now().Hour())
+     hrsMins += fmt.Sprintf("%02d", time.Now().Minute())
+
+     // Get all the keys actively visited pages this current minute
+     if continentCode != "*" && len(continentCode) != 2 {
+       continentCode = "NA"
+     }
+
+     if countryCode != "*" && len(countryCode) != 2 {
+       countryCode = "CA"
+     }
+
+ 
+     
+     if continentCode == "*" && countryCode == "*" {
+
+     	if DEBUG { fmt.Println( "["+tools.DateStampAsString()+"] KEYS geo_visitors:*") }
+     	keys,_ := redisClient.Cmd("KEYS", "geo_visitors:*").List()
+
+	for _,v := range keys {
+            // if DEBUG { fmt.Println("[" + tools.DateStampAsString() + "] SMEMBERS "+ v) }
+            redisClient.Append("SMEMBERS", v)
+     	}
+
+	for i := 0; i < len(keys); i++ {
+            r := redisClient.GetReply()
+            val,_ := r.List()
+            parts := strings.Split(keys[i], ":")	    
+	    _,ok := geoVisits[parts[1]]
+	    if !ok {
+	       geoVisits[parts[1]] = make(map[string][]string)
+	    }
+            geoVisits[parts[1]][parts[2]] = val
+	    
+     	}
+
+
+     } else if continentCode != "*" && countryCode == "*" {
+       // Fetch the data for only a given continent ([CONTINENT]:*)     
+
+     } else if countryCode != "*" {
+       // Fetch the coords of users found inside of specific country (*:[COUNTRY])       	
+
+     } else {
+
+     }
+
+     fmt.Println("\tDATA:",geoVisits)
+
+     redisClient.Close()
+     return geoVisits
 
 }
 
@@ -213,10 +310,12 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 	label := ""
 	value := ""
 	udid := ""
+	lat := float32(0.0)
+	lon := float32(0.0)
 	
 	if len(matches) >= 1 {
 
-		continent, countryCode, _, city = getInfo(matches[1])
+		continent, countryCode, _, city, lat, lon = getInfo(matches[1])
 		ip = matches[1]
 		currHour := strconv.Itoa(time.Now().Hour())
 
@@ -276,6 +375,10 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 			 _ = writeToFile(state.Config["logBaseDir"] + "_daily_device_stats-" + dateStr + ".json", string(dataToDump))
 			 
 
+			 dataToDump,_ = json.Marshal(getLiveSiteGeoTraffic("*","*"))
+			 _ = writeToFile(state.Config["logBaseDir"] + "_daily_geocoord_stats-" + dateStr + ".json", string(dataToDump))
+
+
 			 // Now delete all keys in hashed set and			
 			 // set the "golog_stats_available" key again with the proper expiry time
 			 
@@ -323,6 +426,54 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 		   if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY device_stats:browser:"+tools.YmdToString() + " 1 " + deviceDetails["browser"]+"]")  }
                    redisClient.Append("ZINCRBY", "device_stats:browser:"+tools.YmdToString(), 1, deviceDetails["browser"])
+
+		   if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY device_stats:manufacturer:"+tools.YmdToString() + " 1 " + deviceDetails["manufacturer"]+"]")  }
+                   redisClient.Append("ZINCRBY", "device_stats:manufacturer:"+tools.YmdToString(), 1, deviceDetails["manufacturer"])
+
+		   if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY device_stats:ua_type:"+tools.YmdToString() + " 1 " + deviceDetails["ua_type"]+"]")  }
+                   redisClient.Append("ZINCRBY", "device_stats:ua_type:"+tools.YmdToString(), 1, deviceDetails["ua_type"])
+
+		   if deviceDetails["ua_type"] == "Mobile" {
+		      if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY device_stats:model:"+tools.YmdToString() + " 1 " + deviceDetails["model"]+"]")  }
+                      redisClient.Append("ZINCRBY", "device_stats:model:"+tools.YmdToString(), 1, deviceDetails["model"])
+		   }
+
+		   // ***************** Now populate the live visitor stats ************************
+		    hrs := fmt.Sprintf("%02d", time.Now().Hour())
+		    mins := time.Now().Minute()
+		    h := md5.New()
+		    io.WriteString(h, req.RemoteAddr + "~" + req.Header.Get("User-Agent"))		    
+		    md5Hash := fmt.Sprintf("%x", h.Sum(nil))
+
+		    // This block adds the page increment for the next avg. visit lenght in minutes
+		     ref := req.Header.Get("Referer")
+		     urlHost := ""
+		     urlPath := ""
+		     if ref != "" {
+		     	up,_ := url.Parse(ref)
+			urlPath = up.Path
+			urlHost = up.Host
+		     } else {
+		       urlHost = "default"
+		       urlPath = "/"
+		     }
+
+		    for i := 0; i < AVG_VISIT_LENGTH; i++ {		    
+			 mins := mins+i
+			 minutes := fmt.Sprintf("%02d", mins)
+			 
+		    	if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] SADD page_visitors:" + urlHost + ":" + hrs+minutes + ":" + urlPath + " " + md5Hash)  }
+			if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] EXPIRE page_visitors:"+ urlHost + ":"+hrs+minutes+":"+ urlPath + " " + strconv.Itoa((i+1)*60))  }
+		    	redisClient.Append("SADD", "page_visitors:"+ urlHost +":" + hrs + minutes + ":" + urlPath, md5Hash)
+		   	redisClient.Append("EXPIRE", "page_visitors:"+ urlHost +":" + hrs + minutes + ":" + urlPath, ((i+1)*60))
+		   }
+
+		   // And now store the visitor GeoLocation stats in the necessary set
+		   if DEBUG { fmt.Println("["+tools.DateStampAsString()+ "] SADD geo_visitors:" + continent + ":" + countryCode + " " + fmt.Sprint(lat) +","+ fmt.Sprint(lon)) }
+		   redisClient.Append("SADD", "geo_visitors:"+ continent + ":" + countryCode , fmt.Sprint(lat) +","+ fmt.Sprint(lon) )
+		   if DEBUG { fmt.Println("["+tools.DateStampAsString()+ "] EXPIRE geo_visitors:"+ continent + ":" + countryCode, expiryTime.Unix()) }
+                   redisClient.Append("EXPIRE", "geo_visitors:"+ continent + ":" + countryCode, expiryTime.Unix())
+
 
 		   // Finally flush the buffer of operations to the redis server
 		   redisClient.GetReply()		   		   		   
@@ -421,7 +572,7 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 func (sh *StatsHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
          
-      if req.URL.Path != "/stats" && req.URL.Path != "/statsdevices" {
+      if req.URL.Path != "/stats" && req.URL.Path != "/statsdevices" && req.URL.Path != "/statsvisitors" && req.URL.Path != "/statsgeovisitors" {
       	  res.WriteHeader(http.StatusNotFound)
 	  res.Header().Set("Cache-control", "public, max-age=0")
      	  res.Header().Set("Content-Type", "text/html")          
@@ -455,7 +606,7 @@ func (sh *StatsHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 	} else if req.URL.Path == "/statsdevices" {
 
-	  redisClient := getRedisConnection()
+	       //redisClient := getRedisConnection()
 
 	     /*
 	     t := time.Now()
@@ -481,9 +632,44 @@ func (sh *StatsHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
                fmt.Fprintf(res, "{\"status\": \"error\"}")
        	    }
 
-	    redisClient.Close()
+	    //redisClient.Close()
 
-	}
+	} else if req.URL.Path == "/statsvisitors" {
+
+	       qs := req.URL.Query()
+               fmt.Println(qs)
+	     
+	    data,err := json.Marshal(getLiveSiteTraffic(qs.Get("domain")))
+             res.Header().Set("Cache-control", "public, max-age=0")
+             res.Header().Set("Content-Type", "application/json")
+            if err == nil {
+               fmt.Fprintf(res, string(data))
+            } else {
+               fmt.Fprintf(res, "{\"status\": \"error\"}")
+            }
+
+            //redisClient.Close()
+
+
+	} else if req.URL.Path == "/statsgeovisitors" {
+
+               qs := req.URL.Query()
+
+            data,err := json.Marshal(getLiveSiteGeoTraffic(qs.Get("continent_code"), qs.Get("country_code")))
+
+             res.Header().Set("Cache-control", "public, max-age=0")
+             res.Header().Set("Content-Type", "application/json")
+            if err == nil {
+               fmt.Fprintf(res, string(data))
+            } else {
+               fmt.Fprintf(res, "{\"status\": \"error\"}")
+            }
+
+            //redisClient.Close()
+
+
+        }
+
 
 
 	return

@@ -1,4 +1,4 @@
-golog
+<h2>GoLog<h2>
 =====
 
 A simple self contained web server process that logs data from incoming HTTP request.
@@ -37,12 +37,45 @@ Parameter details:
 `-stats` : Option that specifies if the server will report stats via HTTP (default = 0) <br/>
 `-ri` : The IP on which the reporting server will listen <br/>
 `-rp` : The port on which the reporting server will listen <br/>
+`-conf` : The config file to use to start up the process, instead of specifying all params via command line
 
 
-HTTP URL Format:
---------------------
+HTTP Tracking URL Format:<br/>
+----------------------<br/>
+Place this url in a tracking pixel somewhere at the bottom of your HTML code<br/>
+`http://[DOMAIN]:[PORT]?cid=[CID]&category=[CATEGORY]&action=[ACTION]&label=[LABEL]&value=[VALUE]&rnd=[RAND_INT]`<br/><br/>
 
-`http://[DOMAIN]:[PORT]?cid=[CID]&category=[CATEGORY]&action=[ACTION]&label=[LABEL]&value=[VALUE]&rnd=[RAND_INT]`
+`[DOMAIN]` ->  The domain of the website collecting the stats<br/>
+`[PORT]` -> The port on which the tracking server is listening<br/>
+`[CID]` -> The Client ID of the user account.  (Arbitrary identifier decided by tracking server owner, same concept as a Google Analytics tracking code)<br/>
+`[CATEGORY]` -> Based on same concept as the Google event tracking parameters (https://developers.google.com/analytics/devguides/collection/gajs/eventTrackerGuide#SettingUpEventTracking)<br/>
+`[ACTION]` -> ** View explanation for `[CATEGORY]` **<br/>
+`[LABEL]` -> ** View explanation for `[CATEGORY]` **<br/>
+`[VALUE]` -> A numeric value to give this tracking request, typically 1<br/>
+`[RAND_INT]` -> A random integer (suggested between 1 and at least 1000000) that prevents this HTTP request from being cached<br/>
+<br/>
+
+
+HTTP Stats Monitoring:<br/>
+----------------------<br/>
+`http://[BASE_DOMAIN]:[STATS_PORT]/stats` -> Returns a JSON encoded object containing cumulative stats showing the number of visits from each continent and country broken down by hour of the day<br/>
+
+`http://[BASE_DOMAIN]:[STATS_PORT]/statsdevices` -> Returns JSON encoded object containing cumulative stats regarding user agents, such OS, OS version, user agent type, rendering engine, etc.<br/>
+
+`http://[BASE_DOMAIN]:[STATS_PORT]/statsvisitors?domain=[DOMAIN]` -> Returns JSON encoded object containing the pages currently visited for the specified domain<br/>
+
+`http://[BASE_DOMAIN]:[STATS_PORT]/statsgeovisitors?continent_code=[CONTENT_CODE]&country_code=[COUNTRY_CODE]` -> Returns JSON encoded object containing the approximate geo-coordinates of each visitor in the current day<br/>
+
+
+Stats Monitoring Parameter Details:<br/>
+-----------------------------------<br/>
+
+`[DOMAIN]` -> The domain name for which to filter the stats<br/>
+`[CONTINENT_CODE]` -> The two letter code of the continent, or the wildcard (*) for all continents<br/>
+`[COUNTRY_CODE]` -> The two letter code of the country, or the wildcard (*) for all coutries<br/><br/>
+
+** Please note that specifying * for the CONTINENT_CODE will also directly result in a wildcard for the COUNTRY_CODE<br/><br/>
+
 
 
 [![githalytics.com alpha](https://cruel-carlota.pagodabox.com/f70384f88bf609745a1ae8a3d9255f01 "githalytics.com")](http://githalytics.com/hartfordfive/golog)
