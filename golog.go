@@ -93,7 +93,16 @@ func loadGeoIpDb(dbName string) *geoip.GeoIP {
 }
 
 func writeToFile(filePath string, dataToDump string) int{
-      fh, _ := os.Create(filePath)
+
+      //fh, _ := os.Create(filePath)     
+      fh, err := os.OpenFile(filePath, os.O_APPEND, 0640)
+      if err != nil {
+        //panic(err)
+	fh, _ = os.Create(filePath)       
+	if DEBUG { fmt.Println("File doesn't exist.  Creating it.") }
+      } else {
+      	if DEBUG { fmt.Println("Appending to log file.") }
+      }
       defer fh.Close()
       nb,_ := fh.WriteString(string(dataToDump))
       fh.Sync()
@@ -297,21 +306,32 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 	//Log line format:  [TIMESTAMP] - [IP] - [COUNTRY] - [REGION] - [CITY] - [CATEGORY] - [ACTION] - [LABEL] - [VALUE] - [UA]
 
-	// Extract the IP and get its related info
-	matches := regexp.MustCompile(`([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)`).FindStringSubmatch(req.RemoteAddr)
 	continent := ""
 	countryCode := ""
 	//country := ""
 	city := ""
 	ip := ""
+	ua := ""
+	udid := ""
 	cid := ""
 	category := ""
 	action := ""
 	label := ""
 	value := ""
-	udid := ""
 	lat := float32(0.0)
 	lon := float32(0.0)
+
+	  _, ok := params["ip"]
+        if ok {
+          ip = strings.Replace(params.Get("ip"), "~", "", -1)
+        } else {
+	  ip = req.RemoteAddr
+	}
+
+
+	// Extract the IP and get its related info
+        matches := regexp.MustCompile(`([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)`).FindStringSubmatch(ip)
+
 	
 	if len(matches) >= 1 {
 
@@ -352,7 +372,7 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 			 redisClient.Append("KEYS", "country_hits:*")
 			 r1,_ := redisClient.GetReply().List()
 			 r2,_ := redisClient.GetReply().List()
-			 resKeys := tools.JoinLists(r1,r2)			 
+			 resKeys := tools.JoinLists(r1,r2)			 			 
 
 
 			 // Export the data in a json format and write it to a log file
@@ -385,9 +405,13 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 			 for i := 0; i < len(resKeys); i++ {
 			     redisClient.Append("ZREMRANGEBYRANK", resKeys[i], 0, -1)
 			 }
+			 
+			 // Flush the remainder of the keys		 
+			 redisClient.Append("FLUSHDB")
 			 redisClient.Append("SET", "golog_stats_available", 1)
 			 redisClient.Append("SET", "next_dumpfile_date", tools.YmdToString())
 			 redisClient.Append("EXPIREAT", "golog_stats_available", expiryTime.Unix())			 
+			 
 			 redisClient.GetReply()		
 
 			 if DEBUG {
@@ -485,9 +509,22 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 	}
 
+
+	_, ok = params["ua"]
+        if ok {
+                ua = strings.Replace(params.Get("ua"), "~", "-", -1)
+        }
+	_, ok = params["udid"]
+        if ok {
+                udid = strings.Replace(params.Get("udid"), "~", "-", -1)
+        }
+
+
+	
+
 	ln += "[" + strconv.Itoa(ts) + "] ~ " + ip + " ~ " + countryCode + " ~ " + city + " ~ "
 	
-	 _, ok := params["cid"]
+	 _, ok = params["cid"]
         if ok {
                 cid = strings.Replace(params.Get("cid"), "~", "-", -1)
         }
@@ -507,11 +544,11 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 	if ok {
 		value = strings.Replace(params.Get("value"), "~", "-", -1)
 	}
-
+	
 
 	// If the _golog_uuid cookie is not set, then create the uuid and set it
         cookie := req.Header.Get("Cookie")
-        if cookie != "" {
+        if cookie != "" && udid == "" {
                   cookies := strings.Split(cookie, "; ")
                   for i := 0; i < len(cookies); i++ {
                       parts := strings.Split(cookies[i], "=")
@@ -528,7 +565,10 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
                   }
         }
 
-	ln += cid + " ~ " + udid + " ~ " + category + " ~ " + action + " ~ " + label + " ~ " + value + " ~ " + req.Header.Get("User-Agent") + "\n"
+	if ua == "" {
+	   ua = req.Header.Get("User-Agent")
+	}
+	ln += cid + " ~ " + udid + " ~ " + category + " ~ " + action + " ~ " + label + " ~ " + value + " ~ " + ua + "\n"
 
 	state.BuffLines = append(state.BuffLines, ln)
 	state.BuffLineCount++
@@ -537,11 +577,19 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 	
 	if bl,_ := strconv.Atoi(state.Config["buffLines"]); state.BuffLineCount >= bl {
 
-	   	if DEBUG { fmt.Println("Writting buffer to disk. ("+ strconv.Itoa(bl) +" lines total)" ) }
+	   	if DEBUG { 
+		   fmt.Println("\tWritting buffer to disk. ("+ strconv.Itoa(bl) +" lines total)" ) 		
+		}		
 
-		if getLogfileName() != state.CurrLogFileName {
+		if strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName() != state.CurrLogFileName {
+		
 		        if DEBUG { fmt.Println("\t Updated Filename:", strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName()) }
-			fh, _ := os.Create(strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName())
+
+			fh, err := os.OpenFile(strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName(), os.O_APPEND, 0640)
+			if err != nil {			        
+			        fh, _ = os.Create(strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName())	      	   
+	   	        }
+
 			state.CurrLogFileName = strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName()
 			state.CurrLogFileHandle = fh
 			defer state.CurrLogFileHandle.Close()
