@@ -359,9 +359,18 @@ func GetUserAgentDetails(ua string) map[string]string{
      if _,ok := deviceData["manufacturer"]; !ok {
           deviceData["manufacturer"] = "Unknown"
      }
-     if _,ok := deviceData["ua_type"]; !ok {
+
+
+     // Attempt to confirm it's a bot
+     matches = regexp.MustCompile(`(?i)(Googlebot|Baiduspider)`).FindStringSubmatch(ua)
+     if len(matches) >= 2 {
+        deviceData["ua_type"] = "Bot"
+        deviceData["bot_type"] = matches[1]
+     } else if _,ok := deviceData["ua_type"]; !ok {
           deviceData["ua_type"] = "Desktop"
      }
+
+
 
      
 

@@ -32,7 +32,7 @@ const (
 	AVG_VISIT_LENGTH     int = 2 // Avg. visit length in minutes
 	VERSION_MAJOR  int    = 0
 	VERSION_MINOR  int    = 1
-	VERSION_PATCH  int    = 1
+	VERSION_PATCH  int    = 4
 	VERSION_SUFFIX string = "beta"
 )
 
@@ -94,8 +94,7 @@ func loadGeoIpDb(dbName string) *geoip.GeoIP {
 
 func writeToFile(filePath string, dataToDump string) int{
 
-      //fh, _ := os.Create(filePath)     
-      fh, err := os.OpenFile(filePath, os.O_APPEND, 0640)
+      fh, err := os.OpenFile(filePath, os.O_RDWR|os.O_APPEND, 0640)
       if err != nil {
         //panic(err)
 	fh, _ = os.Create(filePath)       
@@ -152,6 +151,7 @@ func getDeviceStats() map[string]map[string]int{
 		"model": map[string]int{},
 		"manufacturer": map[string]int{},
 		"ua_type": map[string]int{},
+		"bot_type": map[string]int{},
      }
 
 
@@ -209,6 +209,57 @@ func getLiveSiteTraffic(domain string) map[string]int{
 }
 
 
+func getLiveIpStats(countryCode string) map[string]map[string]int {
+     
+     ipStats := map[string]map[string]int{}
+
+     redisClient := getRedisConnection()
+
+     if len(countryCode) == 0 || countryCode == "" {
+     	countryCode = "*"
+     }
+
+     if DEBUG { fmt.Println( "["+tools.DateStampAsString()+"] KEYS ip_hits:*") }
+
+     keyPattern := ""
+     if countryCode == "*" {
+     	keyPattern = "ip_hits:*"
+     } else {
+       keyPattern = "ip_hits:"+countryCode+":*"
+     }
+
+     keys,_ := redisClient.Cmd("KEYS", keyPattern).List()
+
+
+     for _,v := range keys {
+         redisClient.Append("ZRANGE", v, 0, -1, "WITHSCORES")
+     }
+
+     for i := 0; i < len(keys); i++ {
+
+            r := redisClient.GetReply()
+            val,_ := r.List()
+	    parts := strings.Split(keys[i], ":")
+	    numElems := len(val)
+	    for j := 0; j < numElems; j++ {
+	    	
+            	_,ok := ipStats[parts[1]]
+            	if !ok {
+               	   ipStats[parts[1]] = make(map[string]int)
+            	}
+		intVal,_ := strconv.Atoi(val[j+1])
+            	ipStats[parts[1]][val[j]] = intVal	
+		j++
+
+	   }
+
+     }
+
+     return ipStats
+
+}
+
+
 func getLiveSiteGeoTraffic(continentCode string, countryCode string) map[string]map[string][]string{
 
      geoVisits := map[string]map[string][]string{}
@@ -230,13 +281,12 @@ func getLiveSiteGeoTraffic(continentCode string, countryCode string) map[string]
 
  
      
-     if continentCode == "*" && countryCode == "*" {
+     if (continentCode == "*" && countryCode == "*") || continentCode == "*" {
 
      	if DEBUG { fmt.Println( "["+tools.DateStampAsString()+"] KEYS geo_visitors:*") }
      	keys,_ := redisClient.Cmd("KEYS", "geo_visitors:*").List()
 
 	for _,v := range keys {
-            // if DEBUG { fmt.Println("[" + tools.DateStampAsString() + "] SMEMBERS "+ v) }
             redisClient.Append("SMEMBERS", v)
      	}
 
@@ -248,16 +298,54 @@ func getLiveSiteGeoTraffic(continentCode string, countryCode string) map[string]
 	    if !ok {
 	       geoVisits[parts[1]] = make(map[string][]string)
 	    }
-            geoVisits[parts[1]][parts[2]] = val
-	    
+            geoVisits[parts[1]][parts[2]] = val	    
      	}
 
 
      } else if continentCode != "*" && countryCode == "*" {
-       // Fetch the data for only a given continent ([CONTINENT]:*)     
+
+       	// Fetch the data for only a given continent ([CONTINENT]:*)     
+        if DEBUG { fmt.Println( "["+tools.DateStampAsString()+"] KEYS geo_visitors:"+continentCode+":*") }
+        keys,_ := redisClient.Cmd("KEYS", "geo_visitors:"+continentCode+":*").List()
+
+        for _,v := range keys {
+            redisClient.Append("SMEMBERS", v)
+        }
+
+        for i := 0; i < len(keys); i++ {
+            r := redisClient.GetReply()
+            val,_ := r.List()
+            parts := strings.Split(keys[i], ":")
+            _,ok := geoVisits[continentCode]
+            if !ok {
+               geoVisits[continentCode] = make(map[string][]string)
+            }
+            geoVisits[continentCode][parts[2]] = val
+        }
+       
+
 
      } else if countryCode != "*" {
+
        // Fetch the coords of users found inside of specific country (*:[COUNTRY])       	
+        if DEBUG { fmt.Println( "["+tools.DateStampAsString()+"] KEYS geo_visitors:*:"+countryCode) }
+        keys,_ := redisClient.Cmd("KEYS", "geo_visitors:*:"+countryCode).List()
+
+        for _,v := range keys {
+            redisClient.Append("SMEMBERS", v)
+        }
+
+	for i := 0; i < len(keys); i++ {
+            r := redisClient.GetReply()
+            val,_ := r.List()
+            parts := strings.Split(keys[i], ":")
+            _,ok := geoVisits[parts[1]]
+            if !ok {
+               geoVisits[parts[1]] = make(map[string][]string)
+            }
+            geoVisits[parts[1]][parts[2]] = val
+        }
+
 
      } else {
 
@@ -343,6 +431,8 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 		y,m,d := t.Date()
 		expiryTime := time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
 
+
+		//dateStr, _ := redisClient.Cmd("GET", "next_dumpfile_date").Str()
 		redisClient := getRedisConnection()
 
 		if redisClient != nil {
@@ -397,6 +487,11 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 			 dataToDump,_ = json.Marshal(getLiveSiteGeoTraffic("*","*"))
 			 _ = writeToFile(state.Config["logBaseDir"] + "_daily_geocoord_stats-" + dateStr + ".json", string(dataToDump))
+
+
+			 dataToDump,_ = json.Marshal(getLiveIpStats("*"))
+                         _ = writeToFile(state.Config["logBaseDir"] + "_daily_ip_stats-" + dateStr + ".json", string(dataToDump))
+
 
 
 			 // Now delete all keys in hashed set and			
@@ -457,10 +552,20 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 		   if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY device_stats:ua_type:"+tools.YmdToString() + " 1 " + deviceDetails["ua_type"]+"]")  }
                    redisClient.Append("ZINCRBY", "device_stats:ua_type:"+tools.YmdToString(), 1, deviceDetails["ua_type"])
 
+		   if _,ok := deviceDetails["bot_type"]; ok{
+		      if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY device_stats:bot_type:"+tools.YmdToString() + " 1 " + deviceDetails["bot_type"]+"]")  }
+                      redisClient.Append("ZINCRBY", "device_stats:bot_type:"+tools.YmdToString(), 1, deviceDetails["bot_type"])
+		   }
+
 		   if deviceDetails["ua_type"] == "Mobile" {
 		      if DEBUG { fmt.Println("["+tools.DateStampAsString()+"] Redis Operation [ZINCRBY device_stats:model:"+tools.YmdToString() + " 1 " + deviceDetails["model"]+"]")  }
                       redisClient.Append("ZINCRBY", "device_stats:model:"+tools.YmdToString(), 1, deviceDetails["model"])
 		   }
+
+
+		   //****************** Increment the related IP hits *****************************
+		   redisClient.Append("ZINCRBY", "ip_hits:"+countryCode+":"+tools.YmdToString(), 1, ip)
+
 
 		   // ***************** Now populate the live visitor stats ************************
 		    hrs := fmt.Sprintf("%02d", time.Now().Hour())
@@ -585,9 +690,11 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 		
 		        if DEBUG { fmt.Println("\t Updated Filename:", strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName()) }
 
-			fh, err := os.OpenFile(strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName(), os.O_APPEND, 0640)
+			fh, err := os.OpenFile(strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName(), os.O_RDWR|os.O_APPEND, 0660)
 			if err != nil {			        
-			        fh, _ = os.Create(strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName())	      	   
+			       if DEBUG { fmt.Println("\tCould not open file to append data, attempting to create file..") }
+			       fh,_ = os.Create(strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName())	      	   
+				
 	   	        }
 
 			state.CurrLogFileName = strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName()
@@ -597,7 +704,10 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 		totalBytes := 0
 		for i := 0; i < state.BuffLineCount; i++ {
-			nb, _ := state.CurrLogFileHandle.WriteString(state.BuffLines[i])
+			nb, err3 := state.CurrLogFileHandle.WriteString(state.BuffLines[i])
+			if err3 != nil && DEBUG {
+			   fmt.Println("\t Could not write to file "+state.CurrLogFileName+":", err3)
+			}  
 			totalBytes += nb
 		}
 		state.CurrLogFileHandle.Sync()
@@ -610,6 +720,7 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 	// Finally, return the tracking pixel and exit the request.
 	res.Header().Set("Cache-control", "public, max-age=0")
 	res.Header().Set("Content-Type", "image/png")	
+	res.Header().Set("Server","GoLog/"+getVersion())
 	output,_ := base64.StdEncoding.DecodeString(PNGPX_B64)
 	io.WriteString(res, string(output))
 
@@ -620,10 +731,13 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 func (sh *StatsHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
          
-      if req.URL.Path != "/stats" && req.URL.Path != "/statsdevices" && req.URL.Path != "/statsvisitors" && req.URL.Path != "/statsgeovisitors" {
+      if req.URL.Path != "/stats" && req.URL.Path != "/statsdevices" && 
+      	 req.URL.Path != "/statsvisitors" && req.URL.Path != "/statsgeovisitors" &&
+	 req.URL.Path != "/statsip" {
       	  res.WriteHeader(http.StatusNotFound)
 	  res.Header().Set("Cache-control", "public, max-age=0")
      	  res.Header().Set("Content-Type", "text/html")          
+	  res.Header().Set("Server","GoLog/"+getVersion())
 	  fmt.Fprintf(res, "Invalid path")
       	  return 
       }
@@ -644,6 +758,7 @@ func (sh *StatsHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
      	    data1,err1 := json.Marshal(getGeoLocationStats(resList))
      	    res.Header().Set("Cache-control", "public, max-age=0")
      	    res.Header().Set("Content-Type", "application/json")
+	    res.Header().Set("Server","GoLog/"+getVersion())
      	    if err1 == nil {
                fmt.Fprintf(res, string(data1))
      	    } else {
@@ -674,6 +789,8 @@ func (sh *StatsHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
      	     data,err := json.Marshal(getDeviceStats())
      	     res.Header().Set("Cache-control", "public, max-age=0")
      	     res.Header().Set("Content-Type", "application/json")
+	     res.Header().Set("Server","GoLog/"+getVersion())
+
      	    if err == nil {
                fmt.Fprintf(res, string(data))
 	    } else {
@@ -690,6 +807,7 @@ func (sh *StatsHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 	    data,err := json.Marshal(getLiveSiteTraffic(qs.Get("domain")))
              res.Header().Set("Cache-control", "public, max-age=0")
              res.Header().Set("Content-Type", "application/json")
+	     res.Header().Set("Server","GoLog/"+getVersion())
             if err == nil {
                fmt.Fprintf(res, string(data))
             } else {
@@ -707,6 +825,8 @@ func (sh *StatsHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
              res.Header().Set("Cache-control", "public, max-age=0")
              res.Header().Set("Content-Type", "application/json")
+	     res.Header().Set("Server","GoLog/"+getVersion())
+
             if err == nil {
                fmt.Fprintf(res, string(data))
             } else {
@@ -714,6 +834,22 @@ func (sh *StatsHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
             }
 
             //redisClient.Close()
+
+
+        } else if req.URL.Path == "/statsip" {
+
+	  qs := req.URL.Query()
+            data,err := json.Marshal(getLiveIpStats(qs.Get("country_code")))
+
+             res.Header().Set("Cache-control", "public, max-age=0")
+             res.Header().Set("Content-Type", "application/json")
+             res.Header().Set("Server","GoLog/"+getVersion())
+
+            if err == nil {
+               fmt.Fprintf(res, string(data))
+            } else {
+               fmt.Fprintf(res, "{\"status\": \"error\"}")
+            }
 
 
         }
@@ -926,7 +1062,11 @@ func main() {
 		}
 	}
 
-	fh, _ := os.Create(strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName())
+	fh, err := os.OpenFile(strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName(), os.O_RDWR|os.O_APPEND, 0660)
+        if err != nil {
+           fh, _ = os.Create(strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName())
+        }
+
 	state.CurrLogFileName = strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName()
 	state.CurrLogFileHandle = fh
 
