@@ -409,17 +409,36 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 	lat := float32(0.0)
 	lon := float32(0.0)
 
-	  _, ok := params["ip"]
+
+	_, ok := params["ip"]
         if ok {
           ip = strings.Replace(params.Get("ip"), "~", "", -1)
-        } else {
+        } else if req.Header.Get("X-Forwarded-For") != "" {
+	  ip = req.Header.Get("X-Forwarded-For")
+	} else {
 	  ip = req.RemoteAddr
 	}
 
+	_, ok = params["ua"]
+        if ok {
+           ua = strings.Replace(params.Get("ua"), "~", "-", -1)
+        } else if ua == "" {
+           ua = req.Header.Get("User-Agent")
+        }
+
+	/*** If the UA still isn't set, attempt to detect from other headers ***/
+	if ua == "" {
+	   ua = req.Header.Get("X-OperaMini-Phone-UA")	   
+	}
+	if ua == "" {
+           ua = req.Header.Get("X-Original-User-Agent")
+        }
+	if ua == "" {
+           ua = req.Header.Get("X-Device-User-Agent")
+        }
 
 	// Extract the IP and get its related info
         matches := regexp.MustCompile(`([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)`).FindStringSubmatch(ip)
-
 	
 	if len(matches) >= 1 {
 
@@ -614,18 +633,10 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 
 	}
 
-
-	_, ok = params["ua"]
-        if ok {
-                ua = strings.Replace(params.Get("ua"), "~", "-", -1)
-        }
 	_, ok = params["udid"]
         if ok {
                 udid = strings.Replace(params.Get("udid"), "~", "-", -1)
         }
-
-
-	
 
 	ln += "[" + strconv.Itoa(ts) + "] ~ " + ip + " ~ " + countryCode + " ~ " + city + " ~ "
 	
@@ -670,9 +681,7 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
                   }
         }
 
-	if ua == "" {
-	   ua = req.Header.Get("User-Agent")
-	}
+
 	ln += cid + " ~ " + udid + " ~ " + category + " ~ " + action + " ~ " + label + " ~ " + value + " ~ " + ua + "\n"
 
 	state.BuffLines = append(state.BuffLines, ln)
@@ -698,23 +707,27 @@ func (lh *LogHandler) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 	   	        }
 
 			state.CurrLogFileName = strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName()
-			state.CurrLogFileHandle = fh
-			defer state.CurrLogFileHandle.Close()
+			//state.CurrLogFileHandle = fh
+			defer fh.Close()
 		}
 
 		totalBytes := 0
-		for i := 0; i < state.BuffLineCount; i++ {
-			nb, err3 := state.CurrLogFileHandle.WriteString(state.BuffLines[i])
+		fh, err := os.OpenFile(state.CurrLogFileName, os.O_RDWR|os.O_APPEND, 0660)
+		if err == nil {
+		   for i := 0; i < state.BuffLineCount; i++ {
+		   	nb, err3 := fh.WriteString(state.BuffLines[i])
 			if err3 != nil && DEBUG {
 			   fmt.Println("\t Could not write to file "+state.CurrLogFileName+":", err3)
 			}  
 			totalBytes += nb
+		    }
+		    fh.Sync()
+		    defer fh.Close();
+		    if DEBUG { fmt.Println("\t Wrote to:", state.CurrLogFileName) }
+		    // Empty the buffer and reset the buff line count to 0
+		    state.BuffLineCount = 0
+		    state.BuffLines = []string{}
 		}
-		state.CurrLogFileHandle.Sync()
-		if DEBUG { fmt.Println("\t Wrote to:", state.CurrLogFileName) }
-		// Empty the buffer and reset the buff line count to 0
-		state.BuffLineCount = 0
-		state.BuffLines = []string{}
 	}
 
 	// Finally, return the tracking pixel and exit the request.
@@ -1068,9 +1081,9 @@ func main() {
         }
 
 	state.CurrLogFileName = strings.TrimRight(state.Config["logBaseDir"], "/") + "/" + getLogfileName()
-	state.CurrLogFileHandle = fh
+	//state.CurrLogFileHandle = fh
 
-	defer state.CurrLogFileHandle.Close()
+	defer fh.Close()
 
 
 	// Finally, load the redis instance
