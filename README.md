@@ -6,7 +6,7 @@ A simple self contained web server process that logs data from incoming HTTP req
 
 ##  Notice
 
-This project is no longer maintained.   It has a variety of concurency related bugs that will not be fixed.  For a more recent version of a similar application (with better concucrency), please see the [Logger](https://github.com/hartfordfive/Logger) application.
+**This project is no longer maintained.   Considering it was from my earlier days in Go development, it has a variety of bugs, especially concurency related ones.  Unfortunately these won't be fixed.  For a more recent version of a similar application (with better concucrency), please see the [Logger](https://github.com/hartfordfive/Logger) application.**
 
 
 Dependencies:
