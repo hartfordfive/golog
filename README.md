@@ -4,6 +4,11 @@
 A simple self contained web server process that logs data from incoming HTTP request.
 
 
+##  Notice
+
+This project is no longer maintained.   It has a variety of concurency related bugs that will not be fixed.  For a more recent version of a similar application (with better concucrency), please see the [Logger](https://github.com/hartfordfive/Logger) application.
+
+
 Dependencies:
 --------------------
 Redis Server<br/>
